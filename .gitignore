@@ -1,0 +1,8 @@
+backend/bin/
+backend/obj/
+backend/rms-swt.db
+backend/uploads/
+frontend/node_modules/
+frontend/dist/
+.vs/
+.vscode/

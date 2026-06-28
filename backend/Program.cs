@@ -1,0 +1,801 @@
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("frontend", policy =>
+        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+});
+
+builder.Services.AddDbContext<RmsDbContext>(options =>
+    options.UseSqlite(builder.Configuration.GetConnectionString("Default")
+        ?? "Data Source=rms-swt.db"));
+builder.Services.AddOpenApi();
+
+var app = builder.Build();
+
+app.UseCors("frontend");
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<RmsDbContext>();
+    db.Database.EnsureCreated();
+    SeedData.EnsureSeeded(db);
+}
+
+app.MapGet("/api/health", () => Results.Ok(new { status = "OK", app = "RMS SWT API" }));
+
+app.MapPost("/api/auth/login", async (LoginRequest request, RmsDbContext db) =>
+{
+    var user = await db.Users
+        .FirstOrDefaultAsync(u => u.Email == request.Email && u.Role == request.Role);
+
+    if (user is null || user.AccountStatus != "Active")
+    {
+        return Results.BadRequest(new { message = "Invalid credentials or account is locked" });
+    }
+
+    return Results.Ok(new { user.Id, user.FullName, user.Email, user.Role, user.AccountStatus });
+});
+
+app.MapGet("/api/jobs", async (
+    string? keyword,
+    string? location,
+    string? level,
+    decimal? minSalary,
+    decimal? maxSalary,
+    RmsDbContext db) =>
+{
+    var today = DateTime.UtcNow.Date;
+    var query = db.JobPosts
+        .Where(j => j.PostStatus == "Active" && j.Deadline.Date >= today);
+
+    if (!string.IsNullOrWhiteSpace(keyword))
+    {
+        query = query.Where(j => j.Title.Contains(keyword) || j.JobDescription.Contains(keyword) || j.JobRequirements.Contains(keyword));
+    }
+
+    if (!string.IsNullOrWhiteSpace(location))
+    {
+        query = query.Where(j => j.Location.Contains(location));
+    }
+
+    if (!string.IsNullOrWhiteSpace(level))
+    {
+        query = query.Where(j => j.Level.Contains(level));
+    }
+
+    if (minSalary is not null)
+    {
+        query = query.Where(j => j.SalaryMax >= minSalary);
+    }
+
+    if (maxSalary is not null)
+    {
+        query = query.Where(j => j.SalaryMin <= maxSalary);
+    }
+
+    return await query.OrderByDescending(j => j.CreatedAt).ToListAsync();
+});
+
+app.MapGet("/api/jobs/{id:int}", async (int id, RmsDbContext db) =>
+{
+    var job = await db.JobPosts.FindAsync(id);
+    return job is null ? Results.NotFound(new { message = "Job not found" }) : Results.Ok(job);
+});
+
+app.MapGet("/api/employer/jobs", async (RmsDbContext db) =>
+    await db.JobPosts.OrderByDescending(j => j.CreatedAt).ToListAsync());
+
+app.MapPost("/api/jobs", async (JobPostRequest request, RmsDbContext db) =>
+{
+    var validation = ValidateJobPost(request);
+    if (validation is not null)
+    {
+        return Results.BadRequest(new { message = validation });
+    }
+
+    var status = request.Action == "Save Draft" ? "Draft" : "Pending Approval";
+    var job = new JobPost
+    {
+        EmployerId = request.EmployerId,
+        Title = request.Title.Trim(),
+        Department = request.Department?.Trim() ?? "",
+        Location = request.Location?.Trim() ?? "",
+        Level = request.Level?.Trim() ?? "",
+        Quantity = request.Quantity!.Value,
+        SalaryMin = request.SalaryMin,
+        SalaryMax = request.SalaryMax,
+        SalaryType = request.SalaryType?.Trim() ?? "Negotiable",
+        JobDescription = request.JobDescription.Trim(),
+        JobRequirements = request.JobRequirements?.Trim() ?? "",
+        Deadline = request.Deadline!.Value.Date,
+        PostStatus = status
+    };
+
+    db.JobPosts.Add(job);
+    await AddAudit(db, request.EmployerId, "CREATE_JOB_POST", "JobPost", null, null, status);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = status == "Draft" ? "Saved as Draft" : "Saved as Pending Approval", job });
+});
+
+app.MapPatch("/api/admin/jobs/{id:int}/approval", async (int id, ApprovalRequest request, RmsDbContext db) =>
+{
+    if (request.ActorRole != "Admin")
+    {
+        return Results.Forbid();
+    }
+
+    var job = await db.JobPosts.FindAsync(id);
+    if (job is null)
+    {
+        return Results.NotFound(new { message = "Job not found" });
+    }
+
+    var oldStatus = job.PostStatus;
+    job.PostStatus = request.Approved ? "Active" : "Rejected";
+    job.ApprovedAt = request.Approved ? DateTime.UtcNow : null;
+    await AddAudit(db, request.ActorId, "APPROVE_REJECT_JOB", "JobPost", job.Id, oldStatus, job.PostStatus);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = $"Job status updated to {job.PostStatus}", job });
+});
+
+app.MapPost("/api/applications", async (HttpRequest request, RmsDbContext db, IWebHostEnvironment env) =>
+{
+    var form = await request.ReadFormAsync();
+    var jobId = int.TryParse(form["jobId"], out var parsedJobId) ? parsedJobId : 0;
+    var fullName = form["fullName"].ToString();
+    var email = form["email"].ToString();
+    var phone = form["phone"].ToString();
+    var coverLetter = form["coverLetter"].ToString();
+    var file = form.Files.GetFile("cvFile");
+
+    var job = await db.JobPosts.FindAsync(jobId);
+    var isValidJob = job is not null && job.PostStatus == "Active" && job.Deadline.Date >= DateTime.UtcNow.Date;
+    var validation = await ValidateApplication(db, isValidJob, jobId, fullName, email, phone, file);
+    if (validation is not null)
+    {
+        return Results.BadRequest(new { message = validation });
+    }
+
+    var uploadDir = Path.Combine(env.ContentRootPath, "uploads", "cv");
+    Directory.CreateDirectory(uploadDir);
+    var safeName = $"{DateTime.UtcNow:yyyyMMddHHmmssfff}_{Path.GetFileName(file!.FileName)}";
+    var savePath = Path.Combine(uploadDir, safeName);
+    await using (var stream = File.Create(savePath))
+    {
+        await file.CopyToAsync(stream);
+    }
+
+    var application = new Application
+    {
+        JobId = jobId,
+        CandidateEmail = email.Trim(),
+        ApplicantName = fullName.Trim(),
+        ApplicantPhone = phone.Trim(),
+        CoverLetter = coverLetter,
+        ApplicationStatus = "New Applied"
+    };
+    db.Applications.Add(application);
+    await db.SaveChangesAsync();
+
+    db.CvFiles.Add(new CvFile
+    {
+        ApplicationId = application.Id,
+        OriginalFileName = file.FileName,
+        FileExtension = Path.GetExtension(file.FileName),
+        FileSizeMb = Math.Round(file.Length / 1024m / 1024m, 2),
+        StorageUrl = savePath
+    });
+    db.EmailNotifications.Add(new EmailNotification
+    {
+        RecipientEmail = email.Trim(),
+        EmailType = "ApplicationConfirmation",
+        Subject = "Application submitted",
+        SendStatus = "MockSent",
+        RelatedApplicationId = application.Id
+    });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = "Application saved; status New Applied", application });
+});
+
+app.MapGet("/api/applications", async (
+    int? jobId,
+    string? status,
+    string? keyword,
+    bool includeArchived,
+    RmsDbContext db) =>
+{
+    var query = db.Applications.Include(a => a.Job).Include(a => a.CvFile).AsQueryable();
+
+    if (jobId is not null)
+    {
+        query = query.Where(a => a.JobId == jobId);
+    }
+
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        query = query.Where(a => a.ApplicationStatus == status);
+    }
+
+    if (!string.IsNullOrWhiteSpace(keyword))
+    {
+        query = query.Where(a => a.ApplicantName.Contains(keyword) || a.CandidateEmail.Contains(keyword));
+    }
+
+    if (!includeArchived)
+    {
+        query = query.Where(a => !a.IsArchived);
+    }
+
+    return await query
+        .OrderByDescending(a => a.SubmittedAt)
+        .Select(a => new
+        {
+            a.Id,
+            a.JobId,
+            a.CandidateEmail,
+            a.ApplicantName,
+            a.ApplicantPhone,
+            a.CoverLetter,
+            a.ApplicationStatus,
+            a.IsArchived,
+            a.SubmittedAt,
+            a.UpdatedAt,
+            Job = a.Job == null ? null : new
+            {
+                a.Job.Id,
+                a.Job.Title,
+                a.Job.Location,
+                a.Job.Level
+            },
+            CvFile = a.CvFile == null ? null : new
+            {
+                a.CvFile.Id,
+                a.CvFile.OriginalFileName,
+                a.CvFile.FileExtension,
+                a.CvFile.FileSizeMb
+            }
+        })
+        .ToListAsync();
+});
+
+app.MapGet("/api/candidate/applications", async (string email, RmsDbContext db) =>
+    await db.Applications
+        .Include(a => a.Job)
+        .Where(a => a.CandidateEmail == email)
+        .OrderByDescending(a => a.SubmittedAt)
+        .Select(a => new
+        {
+            a.Id,
+            JobTitle = a.Job == null ? "" : a.Job.Title,
+            a.SubmittedAt,
+            Status = a.ApplicationStatus == "CV Passed" ? "Under review" : a.ApplicationStatus
+        })
+        .ToListAsync());
+
+app.MapPatch("/api/applications/{id:int}/status", async (int id, StatusUpdateRequest request, RmsDbContext db) =>
+{
+    var application = await db.Applications.FindAsync(id);
+    if (application is null)
+    {
+        return Results.NotFound(new { message = "Application not found" });
+    }
+
+    var oldStatus = application.ApplicationStatus;
+    application.ApplicationStatus = request.NewStatus;
+    application.IsArchived = request.NewStatus == "Rejected";
+    db.ApplicationStatusHistories.Add(new ApplicationStatusHistory
+    {
+        ApplicationId = application.Id,
+        ChangedByUserId = request.ActorId,
+        OldStatus = oldStatus,
+        NewStatus = request.NewStatus,
+        Note = request.Note ?? ""
+    });
+    await AddAudit(db, request.ActorId, "UPDATE_APPLICATION_STATUS", "Application", application.Id, oldStatus, request.NewStatus);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        message = application.IsArchived ? "Status updated and application archived" : "Status updated",
+        application
+    });
+});
+
+app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db) =>
+{
+    var application = await db.Applications.FindAsync(request.ApplicationId);
+    var validation = await ValidateInterview(db, application, request);
+    if (validation is not null)
+    {
+        return Results.BadRequest(new { message = validation });
+    }
+
+    var interview = new Interview
+    {
+        ApplicationId = request.ApplicationId,
+        ScheduledByUserId = request.ScheduledByUserId,
+        InterviewTime = request.InterviewTime,
+        InterviewMode = request.InterviewMode,
+        LocationOrLink = request.LocationOrLink.Trim(),
+        InterviewStatus = "Scheduled",
+        EmailSent = true
+    };
+    db.Interviews.Add(interview);
+    await db.SaveChangesAsync();
+
+    foreach (var interviewerId in request.InterviewerUserIds.Distinct())
+    {
+        db.InterviewParticipants.Add(new InterviewParticipant
+        {
+            InterviewId = interview.Id,
+            InterviewerUserId = interviewerId,
+            ParticipantStatus = "Invited"
+        });
+    }
+
+    var candidateEmail = application!.CandidateEmail;
+    db.EmailNotifications.Add(new EmailNotification
+    {
+        RecipientEmail = candidateEmail,
+        EmailType = "InterviewInvitation",
+        Subject = "Interview invitation",
+        SendStatus = "MockSent",
+        RelatedApplicationId = application.Id,
+        RelatedInterviewId = interview.Id
+    });
+    await AddAudit(db, request.ScheduledByUserId, "SCHEDULE_INTERVIEW", "Interview", interview.Id, null, "Scheduled");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = "Interview schedule created; email sent", interview });
+});
+
+app.MapGet("/api/admin/users", async (RmsDbContext db) =>
+    await db.Users.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync());
+
+app.MapPost("/api/admin/users", async (CreateUserRequest request, RmsDbContext db) =>
+{
+    if (request.ActorRole != "Admin")
+    {
+        return Results.BadRequest(new { message = "Error: Access denied" });
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Email) || !request.Email.EndsWith("@company.com", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new { message = "Error: Company email required" });
+    }
+
+    var exists = await db.Users.AnyAsync(u => u.Email == request.Email);
+    if (exists)
+    {
+        return Results.BadRequest(new { message = "Error: Email already exists" });
+    }
+
+    var user = new User
+    {
+        FullName = request.FullName.Trim(),
+        Email = request.Email.Trim(),
+        Phone = request.Phone?.Trim() ?? "",
+        Role = request.Role,
+        AccountStatus = "Active"
+    };
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+
+    db.EmailNotifications.Add(new EmailNotification
+    {
+        RecipientEmail = user.Email,
+        EmailType = "PasswordSetup",
+        Subject = "Setup your RMS password",
+        SendStatus = "MockSent"
+    });
+    await AddAudit(db, request.ActorId, "CREATE_ACCOUNT", "User", user.Id, null, "Active");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = "Account created; setup password email sent", user });
+});
+
+app.MapPatch("/api/admin/users/{id:int}", async (int id, UpdateUserRequest request, RmsDbContext db) =>
+{
+    if (request.ActorRole != "Admin")
+    {
+        return Results.BadRequest(new { message = "Error: Access denied" });
+    }
+
+    var user = await db.Users.FindAsync(id);
+    if (user is null)
+    {
+        return Results.NotFound(new { message = "User not found" });
+    }
+
+    var oldValue = $"{user.Role}/{user.AccountStatus}";
+    if (!string.IsNullOrWhiteSpace(request.Role))
+    {
+        user.Role = request.Role;
+    }
+
+    if (!string.IsNullOrWhiteSpace(request.AccountStatus))
+    {
+        user.AccountStatus = request.AccountStatus;
+    }
+
+    await AddAudit(db, request.ActorId, "UPDATE_ACCOUNT", "User", user.Id, oldValue, $"{user.Role}/{user.AccountStatus}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = "Account updated", user });
+});
+
+app.MapGet("/api/admin/audit-logs", async (
+    int? userId,
+    string? actionType,
+    DateTime? from,
+    DateTime? to,
+    RmsDbContext db) =>
+{
+    var query = db.AuditLogs.AsQueryable();
+
+    if (userId is not null)
+    {
+        query = query.Where(l => l.UserId == userId);
+    }
+
+    if (!string.IsNullOrWhiteSpace(actionType))
+    {
+        query = query.Where(l => l.ActionType.Contains(actionType));
+    }
+
+    if (from is not null)
+    {
+        query = query.Where(l => l.CreatedAt >= from);
+    }
+
+    if (to is not null)
+    {
+        query = query.Where(l => l.CreatedAt <= to);
+    }
+
+    return await query.OrderByDescending(l => l.CreatedAt).ToListAsync();
+});
+
+app.MapMethods("/api/admin/audit-logs/{id:int}", new[] { "PATCH", "DELETE" }, () =>
+    Results.BadRequest(new { message = "Error: Audit logs are read-only" }));
+
+app.Run();
+
+static string? ValidateJobPost(JobPostRequest request)
+{
+    if (request.EmployerId <= 0) return "Error: Employer login required";
+    if (string.IsNullOrWhiteSpace(request.Title)) return "Error: Title is required";
+    if (request.Quantity is null || request.Quantity <= 0) return "Error: Quantity must be > 0";
+    if (request.Deadline is null || request.Deadline.Value.Date <= DateTime.UtcNow.Date) return "Error: Deadline invalid";
+    if (request.Deadline.Value.Date < DateTime.UtcNow.Date.AddDays(3)) return "Error: Deadline must be at least +3 days";
+    if (string.IsNullOrWhiteSpace(request.JobDescription)) return "Error: JD is required";
+    return null;
+}
+
+static async Task<string?> ValidateApplication(
+    RmsDbContext db,
+    bool isValidJob,
+    int jobId,
+    string fullName,
+    string email,
+    string phone,
+    IFormFile? file)
+{
+    if (!isValidJob) return "Error: Job is expired or closed";
+    if (string.IsNullOrWhiteSpace(fullName)) return "Error: Full name is required";
+    if (string.IsNullOrWhiteSpace(email) || !email.Contains('@')) return "Error: Email is invalid";
+    if (string.IsNullOrWhiteSpace(phone)) return "Error: Phone is required";
+    if (file is null || file.Length == 0) return "Error: CV file is required";
+
+    var extension = Path.GetExtension(file.FileName);
+    var allowed = new[] { ".pdf", ".doc", ".docx" };
+    if (!allowed.Contains(extension, StringComparer.OrdinalIgnoreCase))
+    {
+        return "Error: CV format must be .pdf, .doc, .docx";
+    }
+
+    var sizeMb = file.Length / 1024m / 1024m;
+    if (sizeMb > 5m) return "Error: CV file size must not exceed 5MB";
+
+    var cutoff = DateTime.UtcNow.AddDays(-30);
+    var duplicate = await db.Applications
+        .AnyAsync(a => a.JobId == jobId && a.CandidateEmail == email && a.SubmittedAt > cutoff);
+    if (duplicate) return "Error: Duplicate application within 30 days";
+
+    return null;
+}
+
+static async Task<string?> ValidateInterview(RmsDbContext db, Application? application, InterviewRequest request)
+{
+    if (application is null) return "Error: Application not found";
+    if (application.ApplicationStatus == "New Applied") return "Error: Candidate must pass CV round";
+    if (application.ApplicationStatus != "CV Passed") return "Error: Candidate status invalid";
+
+    if (request.InterviewTime.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+    {
+        return "Error: Interview must be Monday-Friday";
+    }
+
+    var time = TimeOnly.FromDateTime(request.InterviewTime);
+    var inMorning = time >= new TimeOnly(8, 0) && time <= new TimeOnly(12, 0);
+    var inAfternoon = time >= new TimeOnly(13, 30) && time <= new TimeOnly(17, 30);
+    if (!inMorning && !inAfternoon) return "Error: Time outside working hours";
+
+    if (request.InterviewMode == "Online" && string.IsNullOrWhiteSpace(request.LocationOrLink))
+    {
+        return "Error: Online meeting link is required";
+    }
+
+    var interviewerIds = request.InterviewerUserIds.Distinct().ToList();
+    var conflict = await db.InterviewParticipants
+        .Include(p => p.Interview)
+        .AnyAsync(p => interviewerIds.Contains(p.InterviewerUserId)
+            && p.Interview != null
+            && p.Interview.InterviewTime == request.InterviewTime
+            && p.Interview.InterviewStatus != "Canceled");
+
+    return conflict ? "Error: Interviewer schedule conflict" : null;
+}
+
+static async Task AddAudit(RmsDbContext db, int userId, string action, string entityType, int? entityId, string? oldValue, string? newValue)
+{
+    db.AuditLogs.Add(new AuditLog
+    {
+        UserId = userId,
+        ActionType = action,
+        EntityType = entityType,
+        EntityId = entityId,
+        OldValue = oldValue,
+        NewValue = newValue,
+        IpAddress = "127.0.0.1",
+        ActionStatus = "Success"
+    });
+    await Task.CompletedTask;
+}
+
+public class RmsDbContext : DbContext
+{
+    public RmsDbContext(DbContextOptions<RmsDbContext> options) : base(options) { }
+
+    public DbSet<User> Users => Set<User>();
+    public DbSet<JobPost> JobPosts => Set<JobPost>();
+    public DbSet<Application> Applications => Set<Application>();
+    public DbSet<CvFile> CvFiles => Set<CvFile>();
+    public DbSet<ApplicationStatusHistory> ApplicationStatusHistories => Set<ApplicationStatusHistory>();
+    public DbSet<Interview> Interviews => Set<Interview>();
+    public DbSet<InterviewParticipant> InterviewParticipants => Set<InterviewParticipant>();
+    public DbSet<EmailNotification> EmailNotifications => Set<EmailNotification>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Application>()
+            .HasOne(a => a.CvFile)
+            .WithOne(c => c.Application)
+            .HasForeignKey<CvFile>(c => c.ApplicationId);
+    }
+}
+
+public class User
+{
+    public int Id { get; set; }
+    public string FullName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public string Role { get; set; } = "Candidate";
+    public string AccountStatus { get; set; } = "Active";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class JobPost
+{
+    public int Id { get; set; }
+    public int EmployerId { get; set; }
+    public string Title { get; set; } = "";
+    public string Department { get; set; } = "";
+    public string Location { get; set; } = "";
+    public string Level { get; set; } = "";
+    public int Quantity { get; set; }
+    public decimal SalaryMin { get; set; }
+    public decimal SalaryMax { get; set; }
+    public string SalaryType { get; set; } = "Monthly";
+    public string JobDescription { get; set; } = "";
+    public string JobRequirements { get; set; } = "";
+    public DateTime Deadline { get; set; }
+    public string PostStatus { get; set; } = "Draft";
+    public DateTime? ApprovedAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class Application
+{
+    public int Id { get; set; }
+    public int JobId { get; set; }
+    public JobPost? Job { get; set; }
+    public string CandidateEmail { get; set; } = "";
+    public string ApplicantName { get; set; } = "";
+    public string ApplicantPhone { get; set; } = "";
+    public string CoverLetter { get; set; } = "";
+    public string ApplicationStatus { get; set; } = "New Applied";
+    public bool IsArchived { get; set; }
+    public DateTime SubmittedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public CvFile? CvFile { get; set; }
+}
+
+public class CvFile
+{
+    public int Id { get; set; }
+    public int ApplicationId { get; set; }
+    public Application? Application { get; set; }
+    public string OriginalFileName { get; set; } = "";
+    public string FileExtension { get; set; } = "";
+    public decimal FileSizeMb { get; set; }
+    public string StorageUrl { get; set; } = "";
+    public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class ApplicationStatusHistory
+{
+    public int Id { get; set; }
+    public int ApplicationId { get; set; }
+    public int ChangedByUserId { get; set; }
+    public string OldStatus { get; set; } = "";
+    public string NewStatus { get; set; } = "";
+    public string Note { get; set; } = "";
+    public DateTime ChangedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class Interview
+{
+    public int Id { get; set; }
+    public int ApplicationId { get; set; }
+    public int ScheduledByUserId { get; set; }
+    public DateTime InterviewTime { get; set; }
+    public string InterviewMode { get; set; } = "Online";
+    public string LocationOrLink { get; set; } = "";
+    public string InterviewStatus { get; set; } = "Scheduled";
+    public bool EmailSent { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class InterviewParticipant
+{
+    public int Id { get; set; }
+    public int InterviewId { get; set; }
+    public Interview? Interview { get; set; }
+    public int InterviewerUserId { get; set; }
+    public string ParticipantStatus { get; set; } = "Invited";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class EmailNotification
+{
+    public int Id { get; set; }
+    public string RecipientEmail { get; set; } = "";
+    public string EmailType { get; set; } = "";
+    public string Subject { get; set; } = "";
+    public string SendStatus { get; set; } = "MockSent";
+    public int? RelatedApplicationId { get; set; }
+    public int? RelatedInterviewId { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class AuditLog
+{
+    public int Id { get; set; }
+    public int UserId { get; set; }
+    public string ActionType { get; set; } = "";
+    public string EntityType { get; set; } = "";
+    public int? EntityId { get; set; }
+    public string? OldValue { get; set; }
+    public string? NewValue { get; set; }
+    public string IpAddress { get; set; } = "";
+    public string ActionStatus { get; set; } = "Success";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public record LoginRequest(string Email, string Role);
+
+public record JobPostRequest(
+    int EmployerId,
+    string Title,
+    string? Department,
+    string? Location,
+    string? Level,
+    int? Quantity,
+    decimal SalaryMin,
+    decimal SalaryMax,
+    string? SalaryType,
+    string JobDescription,
+    string? JobRequirements,
+    DateTime? Deadline,
+    string Action);
+
+public record ApprovalRequest(int ActorId, string ActorRole, bool Approved);
+
+public record StatusUpdateRequest(int ActorId, string NewStatus, string? Note);
+
+public record InterviewRequest(
+    int ApplicationId,
+    int ScheduledByUserId,
+    DateTime InterviewTime,
+    string InterviewMode,
+    string LocationOrLink,
+    List<int> InterviewerUserIds);
+
+public record CreateUserRequest(int ActorId, string ActorRole, string FullName, string Email, string? Phone, string Role);
+
+public record UpdateUserRequest(int ActorId, string ActorRole, string? Role, string? AccountStatus);
+
+public static class SeedData
+{
+    public static void EnsureSeeded(RmsDbContext db)
+    {
+        if (!db.Users.Any())
+        {
+            db.Users.AddRange(
+                new User { FullName = "Admin Demo", Email = "admin@company.com", Role = "Admin" },
+                new User { FullName = "Employer Demo", Email = "employer@company.com", Role = "Employer" },
+                new User { FullName = "Interviewer Demo", Email = "interviewer@company.com", Role = "Interviewer" },
+                new User { FullName = "Candidate Demo", Email = "candidate@example.com", Role = "Candidate" }
+            );
+            db.SaveChanges();
+        }
+
+        if (!db.JobPosts.Any())
+        {
+            var employer = db.Users.First(u => u.Role == "Employer");
+            db.JobPosts.AddRange(
+                new JobPost
+                {
+                    EmployerId = employer.Id,
+                    Title = "Frontend React Intern",
+                    Department = "Engineering",
+                    Location = "Ho Chi Minh",
+                    Level = "Intern",
+                    Quantity = 3,
+                    SalaryMin = 300,
+                    SalaryMax = 500,
+                    SalaryType = "Monthly",
+                    JobDescription = "Build simple React screens and connect REST API.",
+                    JobRequirements = "React, JavaScript, HTML/CSS",
+                    Deadline = DateTime.UtcNow.Date.AddDays(14),
+                    PostStatus = "Active",
+                    ApprovedAt = DateTime.UtcNow
+                },
+                new JobPost
+                {
+                    EmployerId = employer.Id,
+                    Title = ".NET Backend Intern",
+                    Department = "Engineering",
+                    Location = "Remote",
+                    Level = "Intern",
+                    Quantity = 2,
+                    SalaryMin = 350,
+                    SalaryMax = 600,
+                    SalaryType = "Monthly",
+                    JobDescription = "Develop REST API for RMS.",
+                    JobRequirements = ".NET, SQL, REST API",
+                    Deadline = DateTime.UtcNow.Date.AddDays(21),
+                    PostStatus = "Active",
+                    ApprovedAt = DateTime.UtcNow
+                }
+            );
+            db.SaveChanges();
+        }
+    }
+}
