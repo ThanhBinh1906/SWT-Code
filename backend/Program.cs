@@ -339,7 +339,13 @@ app.MapGet("/api/candidate/applications", async (string email, RmsDbContext db) 
                     ? "CV passed"
                     : a.ApplicationStatus == "Interview Scheduled"
                         ? "Interview scheduled"
-                        : a.ApplicationStatus
+                        : a.ApplicationStatus == "Interview Passed"
+                            ? "Interview passed"
+                            : a.ApplicationStatus == "Interview Failed"
+                                ? "Not selected after interview"
+                                : a.ApplicationStatus == "Offered"
+                                    ? "Offer sent"
+                                    : a.ApplicationStatus
         })
         .ToListAsync());
 
@@ -463,6 +469,99 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
     await db.SaveChangesAsync();
 
     return Results.Ok(new { message = "Interview schedule created; application moved to Interview Scheduled", interview, application });
+});
+
+app.MapGet("/api/interviews", async (int employerId, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, employerId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var interviews = await db.Interviews
+        .Include(i => i.Application)
+        .ThenInclude(a => a!.Job)
+        .Where(i => i.Application != null && i.Application.Job != null && i.Application.Job.EmployerId == employerId)
+        .OrderByDescending(i => i.InterviewTime)
+        .ToListAsync();
+
+    return Results.Ok(await BuildInterviewList(db, interviews));
+});
+
+app.MapGet("/api/interviewer/interviews", async (int interviewerId, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, interviewerId, "Interviewer", "Interviewer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var interviewIds = await db.InterviewParticipants
+        .Where(p => p.InterviewerUserId == interviewerId)
+        .Select(p => p.InterviewId)
+        .ToListAsync();
+
+    var interviews = await db.Interviews
+        .Include(i => i.Application)
+        .ThenInclude(a => a!.Job)
+        .Where(i => interviewIds.Contains(i.Id))
+        .OrderBy(i => i.InterviewTime)
+        .ToListAsync();
+
+    return Results.Ok(await BuildInterviewList(db, interviews));
+});
+
+app.MapPatch("/api/interviews/{id:int}/result", async (int id, InterviewResultRequest request, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, request.ActorId, request.ActorRole, "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    if (request.Result is not "Passed" and not "Failed")
+    {
+        return Results.BadRequest(new { message = "Error: Interview result invalid" });
+    }
+
+    var interview = await db.Interviews
+        .Include(i => i.Application)
+        .ThenInclude(a => a!.Job)
+        .FirstOrDefaultAsync(i => i.Id == id);
+    if (interview?.Application is null)
+    {
+        return Results.NotFound(new { message = "Interview not found" });
+    }
+
+    if (interview.Application.Job?.EmployerId != request.ActorId)
+    {
+        return Results.BadRequest(new { message = "Error: Interview does not belong to this employer" });
+    }
+
+    var newStatus = request.Result == "Passed" ? "Interview Passed" : "Interview Failed";
+    var validation = ValidateApplicationTransition(interview.Application.ApplicationStatus, newStatus);
+    if (validation is not null)
+    {
+        return Results.BadRequest(new { message = validation });
+    }
+
+    var oldStatus = interview.Application.ApplicationStatus;
+    interview.InterviewStatus = "Completed";
+    interview.Application.ApplicationStatus = newStatus;
+    interview.Application.IsArchived = false;
+    db.ApplicationStatusHistories.Add(new ApplicationStatusHistory
+    {
+        ApplicationId = interview.Application.Id,
+        ChangedByUserId = request.ActorId,
+        OldStatus = oldStatus,
+        NewStatus = newStatus,
+        Note = $"Interview {request.Result.ToLowerInvariant()}"
+    });
+    await AddAudit(db, request.ActorId, "UPDATE_INTERVIEW_RESULT", "Interview", interview.Id, oldStatus, newStatus);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = $"Interview marked {request.Result.ToLowerInvariant()}", interview, application = interview.Application });
 });
 
 app.MapPost("/api/admin/reset-demo-data", async (ResetDemoDataRequest request, RmsDbContext db, IWebHostEnvironment env) =>
@@ -791,12 +890,48 @@ static string? ValidateApplicationTransition(string oldStatus, string newStatus)
     {
         ("New Applied", "CV Passed") => true,
         ("New Applied", "Rejected") => true,
+        ("CV Passed", "Interview Scheduled") => true,
         ("CV Passed", "Rejected") => true,
+        ("Interview Scheduled", "Interview Passed") => true,
+        ("Interview Scheduled", "Interview Failed") => true,
         ("Interview Scheduled", "Rejected") => true,
+        ("Interview Passed", "Offered") => true,
+        ("Interview Passed", "Rejected") => true,
+        ("Offered", "Hired") => true,
+        ("Offered", "Rejected") => true,
         _ => false
     };
 
     return allowed ? null : $"Error: Cannot change application from {oldStatus} to {newStatus}";
+}
+
+static async Task<List<InterviewListItem>> BuildInterviewList(RmsDbContext db, List<Interview> interviews)
+{
+    var interviewIds = interviews.Select(i => i.Id).ToList();
+    var participants = await db.InterviewParticipants
+        .Where(p => interviewIds.Contains(p.InterviewId))
+        .Join(db.Users,
+            participant => participant.InterviewerUserId,
+            user => user.Id,
+            (participant, user) => new { participant.InterviewId, user.FullName })
+        .ToListAsync();
+
+    return interviews.Select(interview => new InterviewListItem(
+        interview.Id,
+        interview.ApplicationId,
+        interview.Application?.ApplicantName ?? "",
+        interview.Application?.CandidateEmail ?? "",
+        interview.Application?.Job?.Title ?? "",
+        interview.InterviewTime,
+        interview.InterviewMode,
+        interview.LocationOrLink,
+        interview.InterviewStatus,
+        interview.Application?.ApplicationStatus ?? "",
+        participants
+            .Where(participant => participant.InterviewId == interview.Id)
+            .Select(participant => participant.FullName)
+            .ToList()
+    )).ToList();
 }
 
 static async Task ResetDemoData(RmsDbContext db, IWebHostEnvironment env)
@@ -937,6 +1072,7 @@ public class Interview
 {
     public int Id { get; set; }
     public int ApplicationId { get; set; }
+    public Application? Application { get; set; }
     public int ScheduledByUserId { get; set; }
     public DateTime InterviewTime { get; set; }
     public string InterviewMode { get; set; } = "Online";
@@ -1010,6 +1146,21 @@ public record InterviewRequest(
     string InterviewMode,
     string LocationOrLink,
     List<int> InterviewerUserIds);
+
+public record InterviewResultRequest(int ActorId, string ActorRole, string Result);
+
+public record InterviewListItem(
+    int Id,
+    int ApplicationId,
+    string ApplicantName,
+    string CandidateEmail,
+    string JobTitle,
+    DateTime InterviewTime,
+    string InterviewMode,
+    string LocationOrLink,
+    string InterviewStatus,
+    string ApplicationStatus,
+    List<string> InterviewerNames);
 
 public record CreateUserRequest(int ActorId, string ActorRole, string FullName, string Email, string? Phone, string Role);
 

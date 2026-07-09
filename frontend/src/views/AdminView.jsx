@@ -8,7 +8,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { Toolbar } from "../components/Toolbar";
 import { shortDate, shortDateTime } from "../utils/date";
 
-export function AdminView({ activeSection, user, show, onUserRefresh }) {
+export function AdminView({ activeSection, user, show, onResetComplete }) {
   const [users, setUsers] = useState([]);
   const [logs, setLogs] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -56,6 +56,15 @@ export function AdminView({ activeSection, user, show, onUserRefresh }) {
   }
 
   async function createAccount() {
+    if (!form.fullName.trim() || !form.email.trim() || !form.phone.trim()) {
+      show("Full name, email, and phone are required", true);
+      return;
+    }
+    if (!form.email.toLowerCase().endsWith("@company.com")) {
+      show("Company email must end with @company.com", true);
+      return;
+    }
+
     try {
       const data = await api("/api/admin/users", {
         method: "POST",
@@ -115,11 +124,7 @@ export function AdminView({ activeSection, user, show, onUserRefresh }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ actorId: user?.id || 0, actorRole: user?.role || "", actorEmail: user?.email || "" }),
       });
-      if (data.user) {
-        onUserRefresh(data.user);
-      }
-      show(data.message);
-      loadAdminData(data.user || user);
+      onResetComplete(`${data.message}. Please sign in again.`);
     } catch (error) {
       show(error.message, true);
     }
@@ -142,7 +147,7 @@ export function AdminView({ activeSection, user, show, onUserRefresh }) {
         <>
           <SectionPanel
             title="Manage user accounts"
-            description="Create staff accounts, assign roles, and lock or unlock users. Company email is required."
+            description="Create staff accounts and manage access."
             actions={
               <>
                 <button className="secondary" onClick={loadAdminData}>
@@ -177,7 +182,7 @@ export function AdminView({ activeSection, user, show, onUserRefresh }) {
             </Toolbar>
           </SectionPanel>
 
-          <SectionPanel title="Accounts" description="Account deletion is represented as lock/unlock for testability.">
+          <SectionPanel title="Accounts" description="Lock accounts instead of deleting them.">
             <DataTable
               loading={loading}
               rows={users}
@@ -212,7 +217,7 @@ export function AdminView({ activeSection, user, show, onUserRefresh }) {
       )}
 
       {activeSection === "approvals" && (
-        <SectionPanel title="Job approvals" description="Review employer submissions and publish or reject them.">
+        <SectionPanel title="Job approvals" description="Review pending employer submissions.">
           <DataTable
             loading={loading}
             rows={pendingJobs}
@@ -243,7 +248,7 @@ export function AdminView({ activeSection, user, show, onUserRefresh }) {
       {activeSection === "audit" && (
         <SectionPanel
           title="Audit logs"
-          description="Logs are read-only and record sensitive workflow actions."
+          description="Read-only records for sensitive actions."
           actions={
             <button className="danger" onClick={testReadOnlyLog}>
               Try delete audit log

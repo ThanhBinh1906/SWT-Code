@@ -8,6 +8,10 @@ const navItems = {
     { id: "job-posts", label: "Job posts", hint: "Create and review" },
     { id: "applications", label: "Applications", hint: "Process CVs" },
     { id: "schedule", label: "Schedule", hint: "Book interviews" },
+    { id: "interviews", label: "Interviews", hint: "Review results" },
+  ],
+  Interviewer: [
+    { id: "schedule", label: "Schedule", hint: "Assigned interviews" },
   ],
   Admin: [
     { id: "accounts", label: "Accounts", hint: "Users and roles" },
@@ -19,6 +23,7 @@ const navItems = {
 const roleTitles = {
   Candidate: "Candidate dashboard",
   Employer: "Employer dashboard",
+  Interviewer: "Interviewer dashboard",
   Admin: "Admin dashboard",
 };
 

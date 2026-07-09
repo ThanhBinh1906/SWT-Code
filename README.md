@@ -65,12 +65,17 @@ $env:VITE_API_URL="http://localhost:PORT"
 npm run dev
 ```
 
+## Demo script
+
+Xem [DEMO_SCRIPT.md](./DEMO_SCRIPT.md) để chạy kịch bản demo 5 phút theo từng role.
+
+Lưu ý: Admin reset demo data sẽ đưa người dùng về màn Login để tránh lệch session sau khi seed lại database.
+
 ## Scope chức năng
 
 Candidate:
 
 - Search/filter active jobs
-- View job detail cơ bản
 - Submit application với CV
 - Validate required info, email, phone, CV extension, CV size <= 5MB
 - Chặn duplicate application cùng email/job trong 30 ngày nếu hồ sơ chưa bị reject
@@ -78,14 +83,17 @@ Candidate:
 
 Employer:
 
-- Create job post
-- Save draft hoặc submit pending approval
-- Validate title, quantity > 0, deadline tối thiểu +3 ngày, JD required
+- Create job post và submit pending approval
 - View job/application thuộc employer hiện tại
-- Update application status: `CV Passed`, `Rejected`
-- Rejected application được archive khỏi danh sách chính
+- Pass/reject CV
 - Schedule interview cho application đã `CV Passed`
-- Validate weekday, working hours, active interviewer, interviewer conflict, online link
+- View interviews, pass/fail interview
+- Offer hoặc mark hired cho candidate phù hợp
+
+Interviewer:
+
+- View assigned interview schedule
+- Dashboard read-only cho lịch được phân công
 
 Admin:
 
@@ -93,7 +101,6 @@ Admin:
 - Assign role, lock/unlock account
 - Approve/reject job đang `Pending Approval`
 - View audit logs
-- Audit logs read-only
 - Reset demo data để test lại flow từ đầu
 
 ## Endpoint smoke test nhanh

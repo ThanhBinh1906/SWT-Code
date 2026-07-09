@@ -20,7 +20,7 @@ export function DataTable({ columns, rows, emptyText = "No data available", load
           {rows.length === 0 ? (
             <tr>
               <td className="empty-cell" colSpan={columns.length}>
-                <EmptyState title={emptyText} text="Try refreshing or changing the current filters." />
+                <EmptyState title={emptyText} text="No records match this view." />
               </td>
             </tr>
           ) : (

@@ -6,16 +6,19 @@ import { MessageBanner } from "./components/MessageBanner";
 import { AdminView } from "./views/AdminView";
 import { CandidateView } from "./views/CandidateView";
 import { EmployerView } from "./views/EmployerView";
+import { InterviewerView } from "./views/InterviewerView";
 
 const demoUsers = [
   { role: "Candidate", email: "candidate@example.com", label: "Candidate Demo", summary: "Search jobs and submit CVs" },
   { role: "Employer", email: "employer@company.com", label: "Employer Demo", summary: "Manage job posts and applicants" },
+  { role: "Interviewer", email: "interviewer@company.com", label: "Interviewer Demo", summary: "Review assigned interviews" },
   { role: "Admin", email: "admin@company.com", label: "Admin Demo", summary: "Manage accounts, approvals, and audit" },
 ];
 
 const defaultSections = {
   Candidate: "find-jobs",
   Employer: "job-posts",
+  Interviewer: "schedule",
   Admin: "accounts",
 };
 
@@ -61,6 +64,12 @@ export default function App() {
     show("");
   }
 
+  function logoutWithMessage(text, error = false) {
+    setUser(null);
+    setActiveSection(defaultSections.Candidate);
+    show(text, error);
+  }
+
   if (!user) {
     return (
       <>
@@ -82,8 +91,9 @@ export default function App() {
     >
       <MessageBanner message={message} isError={isError} />
       {user.role === "Candidate" && <CandidateView activeSection={activeSection} user={user} show={show} onSectionChange={setActiveSection} />}
-      {user.role === "Employer" && <EmployerView activeSection={activeSection} user={user} show={show} />}
-      {user.role === "Admin" && <AdminView activeSection={activeSection} user={user} show={show} onUserRefresh={setUser} />}
+      {user.role === "Employer" && <EmployerView activeSection={activeSection} user={user} show={show} onSectionChange={setActiveSection} />}
+      {user.role === "Interviewer" && <InterviewerView activeSection={activeSection} user={user} show={show} />}
+      {user.role === "Admin" && <AdminView activeSection={activeSection} user={user} show={show} onResetComplete={logoutWithMessage} />}
     </DashboardShell>
   );
 }

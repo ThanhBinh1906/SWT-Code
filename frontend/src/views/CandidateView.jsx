@@ -25,6 +25,7 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
     coverLetter: "I want to apply for this job.",
   });
   const [cvFile, setCvFile] = useState(null);
+  const [cvInputKey, setCvInputKey] = useState(0);
 
   const pendingCount = useMemo(
     () => history.filter((item) => item.status !== "Rejected").length,
@@ -64,6 +65,24 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
       show("Select a job first", true);
       return;
     }
+    if (!form.fullName.trim() || !form.email.trim() || !form.phone.trim()) {
+      show("Full name, email, and phone are required", true);
+      return;
+    }
+    if (!form.email.includes("@")) {
+      show("Email is invalid", true);
+      return;
+    }
+    if (!cvFile) {
+      show("CV file is required", true);
+      return;
+    }
+    const allowedExtensions = [".pdf", ".doc", ".docx"];
+    const lowerName = cvFile.name.toLowerCase();
+    if (!allowedExtensions.some((extension) => lowerName.endsWith(extension))) {
+      show("CV format must be .pdf, .doc, or .docx", true);
+      return;
+    }
 
     const body = new FormData();
     body.append("jobId", selectedJob.id);
@@ -77,6 +96,9 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
       const data = await api("/api/applications", { method: "POST", body });
       show(data.message);
       loadHistory(form.email);
+      setCvFile(null);
+      setCvInputKey((value) => value + 1);
+      onSectionChange("history");
     } catch (error) {
       show(error.message, true);
     }
@@ -169,7 +191,7 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
                 <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
               </Field>
               <Field label="CV file" help=".pdf, .doc, .docx. Maximum 5MB.">
-                <input type="file" onChange={(event) => setCvFile(event.target.files?.[0] || null)} />
+                <input key={cvInputKey} type="file" onChange={(event) => setCvFile(event.target.files?.[0] || null)} />
               </Field>
             </div>
             <Field label="Cover letter">
