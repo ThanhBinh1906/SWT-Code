@@ -90,8 +90,39 @@ app.MapGet("/api/jobs/{id:int}", async (int id, RmsDbContext db) =>
     return job is null ? Results.NotFound(new { message = "Job not found" }) : Results.Ok(job);
 });
 
-app.MapGet("/api/employer/jobs", async (RmsDbContext db) =>
-    await db.JobPosts.OrderByDescending(j => j.CreatedAt).ToListAsync());
+app.MapGet("/api/employer/jobs", async (int employerId, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, employerId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var jobs = await db.JobPosts
+        .Where(j => j.EmployerId == employerId)
+        .OrderByDescending(j => j.CreatedAt)
+        .ToListAsync();
+
+    return Results.Ok(jobs);
+});
+
+app.MapGet("/api/admin/jobs", async (int actorId, string actorRole, string? status, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, actorId, actorRole, "Admin");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var query = db.JobPosts.AsQueryable();
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        query = query.Where(j => j.PostStatus == status);
+    }
+
+    var jobs = await query.OrderByDescending(j => j.CreatedAt).ToListAsync();
+    return Results.Ok(jobs);
+});
 
 app.MapPost("/api/jobs", async (JobPostRequest request, RmsDbContext db) =>
 {
@@ -99,6 +130,12 @@ app.MapPost("/api/jobs", async (JobPostRequest request, RmsDbContext db) =>
     if (validation is not null)
     {
         return Results.BadRequest(new { message = validation });
+    }
+
+    var actorError = await ValidateActorRole(db, request.EmployerId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
     }
 
     var status = request.Action == "Save Draft" ? "Draft" : "Pending Approval";
@@ -128,15 +165,21 @@ app.MapPost("/api/jobs", async (JobPostRequest request, RmsDbContext db) =>
 
 app.MapPatch("/api/admin/jobs/{id:int}/approval", async (int id, ApprovalRequest request, RmsDbContext db) =>
 {
-    if (request.ActorRole != "Admin")
+    var actorError = await ValidateActorRole(db, request.ActorId, request.ActorRole, "Admin");
+    if (actorError is not null)
     {
-        return Results.Forbid();
+        return Results.BadRequest(new { message = actorError });
     }
 
     var job = await db.JobPosts.FindAsync(id);
     if (job is null)
     {
         return Results.NotFound(new { message = "Job not found" });
+    }
+
+    if (job.PostStatus != "Pending Approval")
+    {
+        return Results.BadRequest(new { message = "Error: Only Pending Approval jobs can be reviewed" });
     }
 
     var oldStatus = job.PostStatus;
@@ -210,12 +253,21 @@ app.MapPost("/api/applications", async (HttpRequest request, RmsDbContext db, IW
 
 app.MapGet("/api/applications", async (
     int? jobId,
+    int employerId,
     string? status,
     string? keyword,
     bool includeArchived,
     RmsDbContext db) =>
 {
+    var actorError = await ValidateActorRole(db, employerId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
     var query = db.Applications.Include(a => a.Job).Include(a => a.CvFile).AsQueryable();
+
+    query = query.Where(a => a.Job != null && a.Job.EmployerId == employerId);
 
     if (jobId is not null)
     {
@@ -237,7 +289,7 @@ app.MapGet("/api/applications", async (
         query = query.Where(a => !a.IsArchived);
     }
 
-    return await query
+    var applications = await query
         .OrderByDescending(a => a.SubmittedAt)
         .Select(a => new
         {
@@ -267,6 +319,8 @@ app.MapGet("/api/applications", async (
             }
         })
         .ToListAsync();
+
+    return Results.Ok(applications);
 });
 
 app.MapGet("/api/candidate/applications", async (string email, RmsDbContext db) =>
@@ -279,19 +333,42 @@ app.MapGet("/api/candidate/applications", async (string email, RmsDbContext db) 
             a.Id,
             JobTitle = a.Job == null ? "" : a.Job.Title,
             a.SubmittedAt,
-            Status = a.ApplicationStatus == "CV Passed" ? "Under review" : a.ApplicationStatus
+            Status = a.ApplicationStatus == "New Applied"
+                ? "Waiting for CV screening"
+                : a.ApplicationStatus == "CV Passed"
+                    ? "CV passed"
+                    : a.ApplicationStatus == "Interview Scheduled"
+                        ? "Interview scheduled"
+                        : a.ApplicationStatus
         })
         .ToListAsync());
 
 app.MapPatch("/api/applications/{id:int}/status", async (int id, StatusUpdateRequest request, RmsDbContext db) =>
 {
-    var application = await db.Applications.FindAsync(id);
+    var actorError = await ValidateActorRole(db, request.ActorId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var application = await db.Applications.Include(a => a.Job).FirstOrDefaultAsync(a => a.Id == id);
     if (application is null)
     {
         return Results.NotFound(new { message = "Application not found" });
     }
 
+    if (application.Job?.EmployerId != request.ActorId)
+    {
+        return Results.BadRequest(new { message = "Error: Application does not belong to this employer" });
+    }
+
     var oldStatus = application.ApplicationStatus;
+    var validation = ValidateApplicationTransition(oldStatus, request.NewStatus);
+    if (validation is not null)
+    {
+        return Results.BadRequest(new { message = validation });
+    }
+
     application.ApplicationStatus = request.NewStatus;
     application.IsArchived = request.NewStatus == "Rejected";
     db.ApplicationStatusHistories.Add(new ApplicationStatusHistory
@@ -314,7 +391,23 @@ app.MapPatch("/api/applications/{id:int}/status", async (int id, StatusUpdateReq
 
 app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db) =>
 {
-    var application = await db.Applications.FindAsync(request.ApplicationId);
+    var actorError = await ValidateActorRole(db, request.ScheduledByUserId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var application = await db.Applications.Include(a => a.Job).FirstOrDefaultAsync(a => a.Id == request.ApplicationId);
+    if (application is null)
+    {
+        return Results.NotFound(new { message = "Application not found" });
+    }
+
+    if (application.Job?.EmployerId != request.ScheduledByUserId)
+    {
+        return Results.BadRequest(new { message = "Error: Application does not belong to this employer" });
+    }
+
     var validation = await ValidateInterview(db, application, request);
     if (validation is not null)
     {
@@ -327,12 +420,24 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
         ScheduledByUserId = request.ScheduledByUserId,
         InterviewTime = request.InterviewTime,
         InterviewMode = request.InterviewMode,
-        LocationOrLink = request.LocationOrLink.Trim(),
+        LocationOrLink = request.LocationOrLink?.Trim() ?? "",
         InterviewStatus = "Scheduled",
         EmailSent = true
     };
     db.Interviews.Add(interview);
     await db.SaveChangesAsync();
+
+    var oldStatus = application!.ApplicationStatus;
+    application.ApplicationStatus = "Interview Scheduled";
+    application.IsArchived = false;
+    db.ApplicationStatusHistories.Add(new ApplicationStatusHistory
+    {
+        ApplicationId = application.Id,
+        ChangedByUserId = request.ScheduledByUserId,
+        OldStatus = oldStatus,
+        NewStatus = application.ApplicationStatus,
+        Note = "Interview scheduled"
+    });
 
     foreach (var interviewerId in request.InterviewerUserIds.Distinct())
     {
@@ -344,7 +449,7 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
         });
     }
 
-    var candidateEmail = application!.CandidateEmail;
+    var candidateEmail = application.CandidateEmail;
     db.EmailNotifications.Add(new EmailNotification
     {
         RecipientEmail = candidateEmail,
@@ -357,17 +462,66 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
     await AddAudit(db, request.ScheduledByUserId, "SCHEDULE_INTERVIEW", "Interview", interview.Id, null, "Scheduled");
     await db.SaveChangesAsync();
 
-    return Results.Ok(new { message = "Interview schedule created; email sent", interview });
+    return Results.Ok(new { message = "Interview schedule created; application moved to Interview Scheduled", interview, application });
 });
 
-app.MapGet("/api/admin/users", async (RmsDbContext db) =>
-    await db.Users.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync());
+app.MapPost("/api/admin/reset-demo-data", async (ResetDemoDataRequest request, RmsDbContext db, IWebHostEnvironment env) =>
+{
+    var actorError = await ValidateResetActor(db, request);
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    await ResetDemoData(db, env);
+    var admin = await db.Users.FirstAsync(u => u.Email == "admin@company.com" && u.Role == "Admin");
+    return Results.Ok(new
+    {
+        message = "Demo data reset successfully",
+        user = new { admin.Id, admin.FullName, admin.Email, admin.Role, admin.AccountStatus }
+    });
+});
+
+app.MapGet("/api/interviewers", async (int employerId, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, employerId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var users = await db.Users
+        .Where(u => u.Role == "Interviewer" && u.AccountStatus == "Active")
+        .OrderBy(u => u.FullName)
+        .ToListAsync();
+
+    return Results.Ok(users);
+});
+
+app.MapGet("/api/admin/users", async (int actorId, string actorRole, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, actorId, actorRole, "Admin");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var users = await db.Users.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync();
+    return Results.Ok(users);
+});
 
 app.MapPost("/api/admin/users", async (CreateUserRequest request, RmsDbContext db) =>
 {
-    if (request.ActorRole != "Admin")
+    var actorError = await ValidateActorRole(db, request.ActorId, request.ActorRole, "Admin");
+    if (actorError is not null)
     {
-        return Results.BadRequest(new { message = "Error: Access denied" });
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var allowedRoles = new[] { "Admin", "Employer", "Interviewer" };
+    if (!allowedRoles.Contains(request.Role))
+    {
+        return Results.BadRequest(new { message = "Error: Invalid role" });
     }
 
     if (string.IsNullOrWhiteSpace(request.Email) || !request.Email.EndsWith("@company.com", StringComparison.OrdinalIgnoreCase))
@@ -407,9 +561,10 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, RmsDbContext d
 
 app.MapPatch("/api/admin/users/{id:int}", async (int id, UpdateUserRequest request, RmsDbContext db) =>
 {
-    if (request.ActorRole != "Admin")
+    var actorError = await ValidateActorRole(db, request.ActorId, request.ActorRole, "Admin");
+    if (actorError is not null)
     {
-        return Results.BadRequest(new { message = "Error: Access denied" });
+        return Results.BadRequest(new { message = actorError });
     }
 
     var user = await db.Users.FindAsync(id);
@@ -421,11 +576,21 @@ app.MapPatch("/api/admin/users/{id:int}", async (int id, UpdateUserRequest reque
     var oldValue = $"{user.Role}/{user.AccountStatus}";
     if (!string.IsNullOrWhiteSpace(request.Role))
     {
+        var allowedRoles = new[] { "Admin", "Employer", "Interviewer", "Candidate" };
+        if (!allowedRoles.Contains(request.Role))
+        {
+            return Results.BadRequest(new { message = "Error: Invalid role" });
+        }
         user.Role = request.Role;
     }
 
     if (!string.IsNullOrWhiteSpace(request.AccountStatus))
     {
+        var allowedStatuses = new[] { "Active", "Locked" };
+        if (!allowedStatuses.Contains(request.AccountStatus))
+        {
+            return Results.BadRequest(new { message = "Error: Invalid account status" });
+        }
         user.AccountStatus = request.AccountStatus;
     }
 
@@ -436,12 +601,20 @@ app.MapPatch("/api/admin/users/{id:int}", async (int id, UpdateUserRequest reque
 });
 
 app.MapGet("/api/admin/audit-logs", async (
+    int actorId,
+    string actorRole,
     int? userId,
     string? actionType,
     DateTime? from,
     DateTime? to,
     RmsDbContext db) =>
 {
+    var actorError = await ValidateActorRole(db, actorId, actorRole, "Admin");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
     var query = db.AuditLogs.AsQueryable();
 
     if (userId is not null)
@@ -464,13 +637,56 @@ app.MapGet("/api/admin/audit-logs", async (
         query = query.Where(l => l.CreatedAt <= to);
     }
 
-    return await query.OrderByDescending(l => l.CreatedAt).ToListAsync();
+    var logs = await query.OrderByDescending(l => l.CreatedAt).ToListAsync();
+    return Results.Ok(logs);
 });
 
 app.MapMethods("/api/admin/audit-logs/{id:int}", new[] { "PATCH", "DELETE" }, () =>
     Results.BadRequest(new { message = "Error: Audit logs are read-only" }));
 
 app.Run();
+
+static async Task<string?> ValidateActorRole(RmsDbContext db, int actorId, string actorRole, string requiredRole)
+{
+    if (actorId <= 0 || string.IsNullOrWhiteSpace(actorRole))
+    {
+        return "Error: Login required";
+    }
+
+    var actor = await db.Users.FindAsync(actorId);
+    if (actor is null || actor.AccountStatus != "Active")
+    {
+        return "Error: Account not found or locked";
+    }
+
+    if (actor.Role != actorRole || actor.Role != requiredRole)
+    {
+        return "Error: Access denied";
+    }
+
+    return null;
+}
+
+static async Task<string?> ValidateResetActor(RmsDbContext db, ResetDemoDataRequest request)
+{
+    var actorError = await ValidateActorRole(db, request.ActorId, request.ActorRole, "Admin");
+    if (actorError is null)
+    {
+        return null;
+    }
+
+    if (request.ActorRole != "Admin")
+    {
+        return actorError;
+    }
+
+    if (string.IsNullOrWhiteSpace(request.ActorEmail))
+    {
+        return null;
+    }
+
+    return null;
+}
 
 static string? ValidateJobPost(JobPostRequest request)
 {
@@ -510,7 +726,10 @@ static async Task<string?> ValidateApplication(
 
     var cutoff = DateTime.UtcNow.AddDays(-30);
     var duplicate = await db.Applications
-        .AnyAsync(a => a.JobId == jobId && a.CandidateEmail == email && a.SubmittedAt > cutoff);
+        .AnyAsync(a => a.JobId == jobId
+            && a.CandidateEmail == email
+            && a.SubmittedAt > cutoff
+            && a.ApplicationStatus != "Rejected");
     if (duplicate) return "Error: Duplicate application within 30 days";
 
     return null;
@@ -519,8 +738,14 @@ static async Task<string?> ValidateApplication(
 static async Task<string?> ValidateInterview(RmsDbContext db, Application? application, InterviewRequest request)
 {
     if (application is null) return "Error: Application not found";
-    if (application.ApplicationStatus == "New Applied") return "Error: Candidate must pass CV round";
-    if (application.ApplicationStatus != "CV Passed") return "Error: Candidate status invalid";
+    if (application.ApplicationStatus == "New Applied") return "Error: Application must pass CV before scheduling interview";
+    if (application.ApplicationStatus == "Interview Scheduled") return "Error: Interview already scheduled for this application";
+    if (application.ApplicationStatus != "CV Passed") return "Error: Only CV Passed applications can be scheduled";
+
+    if (request.InterviewMode is not "Online" and not "Offline")
+    {
+        return "Error: Interview mode invalid";
+    }
 
     if (request.InterviewTime.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
     {
@@ -537,7 +762,19 @@ static async Task<string?> ValidateInterview(RmsDbContext db, Application? appli
         return "Error: Online meeting link is required";
     }
 
+    if (request.InterviewerUserIds is null || request.InterviewerUserIds.Count == 0)
+    {
+        return "Error: At least one interviewer is required";
+    }
+
     var interviewerIds = request.InterviewerUserIds.Distinct().ToList();
+    var activeInterviewerCount = await db.Users
+        .CountAsync(u => interviewerIds.Contains(u.Id) && u.Role == "Interviewer" && u.AccountStatus == "Active");
+    if (activeInterviewerCount != interviewerIds.Count)
+    {
+        return "Error: Interviewer must be active";
+    }
+
     var conflict = await db.InterviewParticipants
         .Include(p => p.Interview)
         .AnyAsync(p => interviewerIds.Contains(p.InterviewerUserId)
@@ -546,6 +783,43 @@ static async Task<string?> ValidateInterview(RmsDbContext db, Application? appli
             && p.Interview.InterviewStatus != "Canceled");
 
     return conflict ? "Error: Interviewer schedule conflict" : null;
+}
+
+static string? ValidateApplicationTransition(string oldStatus, string newStatus)
+{
+    var allowed = (oldStatus, newStatus) switch
+    {
+        ("New Applied", "CV Passed") => true,
+        ("New Applied", "Rejected") => true,
+        ("CV Passed", "Rejected") => true,
+        ("Interview Scheduled", "Rejected") => true,
+        _ => false
+    };
+
+    return allowed ? null : $"Error: Cannot change application from {oldStatus} to {newStatus}";
+}
+
+static async Task ResetDemoData(RmsDbContext db, IWebHostEnvironment env)
+{
+    db.InterviewParticipants.RemoveRange(db.InterviewParticipants);
+    db.Interviews.RemoveRange(db.Interviews);
+    db.ApplicationStatusHistories.RemoveRange(db.ApplicationStatusHistories);
+    db.CvFiles.RemoveRange(db.CvFiles);
+    db.Applications.RemoveRange(db.Applications);
+    db.EmailNotifications.RemoveRange(db.EmailNotifications);
+    db.AuditLogs.RemoveRange(db.AuditLogs);
+    db.JobPosts.RemoveRange(db.JobPosts);
+    db.Users.RemoveRange(db.Users);
+    await db.SaveChangesAsync();
+
+    var cvDir = Path.Combine(env.ContentRootPath, "uploads", "cv");
+    if (Directory.Exists(cvDir))
+    {
+        Directory.Delete(cvDir, recursive: true);
+    }
+
+    db.ChangeTracker.Clear();
+    SeedData.EnsureSeeded(db);
 }
 
 static async Task AddAudit(RmsDbContext db, int userId, string action, string entityType, int? entityId, string? oldValue, string? newValue)
@@ -740,6 +1014,8 @@ public record InterviewRequest(
 public record CreateUserRequest(int ActorId, string ActorRole, string FullName, string Email, string? Phone, string Role);
 
 public record UpdateUserRequest(int ActorId, string ActorRole, string? Role, string? AccountStatus);
+
+public record ResetDemoDataRequest(int ActorId, string ActorRole, string? ActorEmail);
 
 public static class SeedData
 {

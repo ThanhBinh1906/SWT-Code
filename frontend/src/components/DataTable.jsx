@@ -1,4 +1,11 @@
-export function DataTable({ columns, rows, emptyText = "No data available" }) {
+import { EmptyState } from "./EmptyState";
+import { LoadingBlock } from "./LoadingBlock";
+
+export function DataTable({ columns, rows, emptyText = "No data available", loading = false }) {
+  if (loading) {
+    return <LoadingBlock label="Loading table data" />;
+  }
+
   return (
     <div className="table-wrap">
       <table>
@@ -13,7 +20,7 @@ export function DataTable({ columns, rows, emptyText = "No data available" }) {
           {rows.length === 0 ? (
             <tr>
               <td className="empty-cell" colSpan={columns.length}>
-                {emptyText}
+                <EmptyState title={emptyText} text="Try refreshing or changing the current filters." />
               </td>
             </tr>
           ) : (

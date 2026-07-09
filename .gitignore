@@ -1,6 +1,9 @@
 backend/bin/
 backend/obj/
 backend/rms-swt.db
+backend/rms-swt.db-shm
+backend/rms-swt.db-wal
+backend/*.log
 backend/uploads/
 frontend/node_modules/
 frontend/dist/

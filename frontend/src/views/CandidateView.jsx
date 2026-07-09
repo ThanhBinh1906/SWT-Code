@@ -1,28 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { DataTable } from "../components/DataTable";
 import { Field } from "../components/Field";
 import { SectionPanel } from "../components/SectionPanel";
+import { StatCard } from "../components/StatCard";
 import { StatusBadge } from "../components/StatusBadge";
+import { Toolbar } from "../components/Toolbar";
 import { shortDate } from "../utils/date";
 
-export function CandidateView({ show }) {
+const candidateEmail = "candidate@example.com";
+
+export function CandidateView({ activeSection, user, show, onSectionChange }) {
+  const currentEmail = user?.email || candidateEmail;
   const [jobs, setJobs] = useState([]);
   const [selectedJob, setSelectedJob] = useState(null);
   const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [filters, setFilters] = useState({ keyword: "", location: "", level: "" });
   const [form, setForm] = useState({
     fullName: "Nguyen Van A",
-    email: "candidate@example.com",
+    email: currentEmail,
     phone: "0912345678",
     coverLetter: "I want to apply for this job.",
   });
   const [cvFile, setCvFile] = useState(null);
 
+  const pendingCount = useMemo(
+    () => history.filter((item) => item.status !== "Rejected").length,
+    [history]
+  );
+
   async function loadJobs() {
     try {
-      setLoading(true);
+      setLoadingJobs(true);
       const query = new URLSearchParams(filters).toString();
       const data = await api(`/api/jobs?${query}`);
       setJobs(data);
@@ -30,17 +41,20 @@ export function CandidateView({ show }) {
     } catch (error) {
       show(error.message, true);
     } finally {
-      setLoading(false);
+      setLoadingJobs(false);
     }
   }
 
-  async function loadHistory() {
+  async function loadHistory(email = form.email) {
     try {
-      const data = await api(`/api/candidate/applications?email=${encodeURIComponent(form.email)}`);
+      setLoadingHistory(true);
+      const data = await api(`/api/candidate/applications?email=${encodeURIComponent(email)}`);
       setHistory(data);
       show(`Loaded ${data.length} application history row(s)`);
     } catch (error) {
       show(error.message, true);
+    } finally {
+      setLoadingHistory(false);
     }
   }
 
@@ -62,7 +76,7 @@ export function CandidateView({ show }) {
     try {
       const data = await api("/api/applications", { method: "POST", body });
       show(data.message);
-      loadHistory();
+      loadHistory(form.email);
     } catch (error) {
       show(error.message, true);
     }
@@ -70,89 +84,122 @@ export function CandidateView({ show }) {
 
   useEffect(() => {
     loadJobs();
-    loadHistory();
+    loadHistory(currentEmail);
   }, []);
 
   return (
     <div className="view-stack">
-      <SectionPanel
-        title="Search active jobs"
-        description="Find open positions by keyword, location, and level. Results only include active jobs that are still within deadline."
-        actions={<button onClick={loadJobs}>{loading ? "Searching..." : "Search"}</button>}
-      >
-        <div className="form-grid">
-          <Field label="Keyword">
-            <input value={filters.keyword} onChange={(event) => setFilters({ ...filters, keyword: event.target.value })} />
-          </Field>
-          <Field label="Location">
-            <input value={filters.location} onChange={(event) => setFilters({ ...filters, location: event.target.value })} />
-          </Field>
-          <Field label="Level">
-            <input value={filters.level} onChange={(event) => setFilters({ ...filters, level: event.target.value })} />
-          </Field>
-        </div>
+      <div className="stats-grid">
+        <StatCard label="Active jobs" value={jobs.length} note="Open for applications" />
+        <StatCard label="Applications" value={history.length} note="Submitted by current email" />
+        <StatCard label="In process" value={pendingCount} note="Not rejected" tone="info" />
+      </div>
 
-        <DataTable
-          emptyText="No active jobs matched your filters."
-          rows={jobs}
-          columns={[
-            { key: "title", header: "Title" },
-            { key: "location", header: "Location" },
-            { key: "level", header: "Level" },
-            { key: "salary", header: "Salary", render: (job) => `${job.salaryMin} - ${job.salaryMax}` },
-            { key: "deadline", header: "Deadline", render: (job) => shortDate(job.deadline) },
-            {
-              key: "action",
-              header: "Action",
-              render: (job) => <button onClick={() => setSelectedJob(job)}>View / Apply</button>,
-            },
-          ]}
-        />
-      </SectionPanel>
-
-      <SectionPanel
-        title="Submit application"
-        description={selectedJob ? `Selected job: ${selectedJob.title} #${selectedJob.id}` : "Select a job from the list before submitting."}
-      >
-        <form onSubmit={submitApplication}>
+      {activeSection === "find-jobs" && (
+        <SectionPanel
+          title="Find active jobs"
+          description="Search by keyword, location, or level. Only active jobs within deadline are listed."
+          actions={<button onClick={loadJobs}>{loadingJobs ? "Searching..." : "Search"}</button>}
+        >
           <div className="form-grid">
-            <Field label="Full name">
-              <input value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
+            <Field label="Keyword">
+              <input value={filters.keyword} onChange={(event) => setFilters({ ...filters, keyword: event.target.value })} />
             </Field>
-            <Field label="Email">
-              <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+            <Field label="Location">
+              <input value={filters.location} onChange={(event) => setFilters({ ...filters, location: event.target.value })} />
             </Field>
-            <Field label="Phone">
-              <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
-            </Field>
-            <Field label="CV file" help=".pdf, .doc, .docx. Maximum 5MB.">
-              <input type="file" onChange={(event) => setCvFile(event.target.files?.[0] || null)} />
+            <Field label="Level">
+              <input value={filters.level} onChange={(event) => setFilters({ ...filters, level: event.target.value })} />
             </Field>
           </div>
-          <Field label="Cover letter">
-            <textarea value={form.coverLetter} onChange={(event) => setForm({ ...form, coverLetter: event.target.value })} />
-          </Field>
-          <div className="actions">
-            <button type="submit">Submit application</button>
-            <button className="secondary" type="button" onClick={loadHistory}>
-              Refresh history
-            </button>
-          </div>
-        </form>
-      </SectionPanel>
 
-      <SectionPanel title="Application history" description="Candidate-facing statuses stay generalized for privacy.">
-        <DataTable
-          emptyText="This email has no submitted applications yet."
-          rows={history}
-          columns={[
-            { key: "id", header: "ID" },
-            { key: "jobTitle", header: "Job" },
-            { key: "submittedAt", header: "Submitted", render: (row) => shortDate(row.submittedAt) },
-            { key: "status", header: "Status", render: (row) => <StatusBadge value={row.status} /> },
-          ]}
-        />
-      </SectionPanel>
+          <DataTable
+            loading={loadingJobs}
+            emptyText="No active jobs matched your filters."
+            rows={jobs}
+            columns={[
+              { key: "title", header: "Title" },
+              { key: "location", header: "Location" },
+              { key: "level", header: "Level" },
+              { key: "salary", header: "Salary", render: (job) => `${job.salaryMin} - ${job.salaryMax}` },
+              { key: "deadline", header: "Deadline", render: (job) => shortDate(job.deadline) },
+              {
+                key: "action",
+                header: "Action",
+                render: (job) => (
+                  <button
+                    className={selectedJob?.id === job.id ? "secondary" : ""}
+                    onClick={() => {
+                      setSelectedJob(job);
+                      show(`Selected job: ${job.title} #${job.id}`);
+                      onSectionChange("apply");
+                    }}
+                  >
+                    {selectedJob?.id === job.id ? "Selected" : "Select this job"}
+                  </button>
+                ),
+              },
+            ]}
+          />
+        </SectionPanel>
+      )}
+
+      {activeSection === "apply" && (
+        <SectionPanel
+          title="Submit application"
+          description={selectedJob ? `Selected job: ${selectedJob.title} #${selectedJob.id}` : "Select a job from Find jobs before submitting."}
+        >
+          {selectedJob && (
+            <div className="selected-job-note">
+              <strong>{selectedJob.title}</strong>
+              <span>
+                Job #{selectedJob.id} - {selectedJob.location} - deadline {shortDate(selectedJob.deadline)}
+              </span>
+            </div>
+          )}
+          <form onSubmit={submitApplication}>
+            <div className="form-grid">
+              <Field label="Full name">
+                <input value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
+              </Field>
+              <Field label="Email">
+                <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+              </Field>
+              <Field label="Phone">
+                <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+              </Field>
+              <Field label="CV file" help=".pdf, .doc, .docx. Maximum 5MB.">
+                <input type="file" onChange={(event) => setCvFile(event.target.files?.[0] || null)} />
+              </Field>
+            </div>
+            <Field label="Cover letter">
+              <textarea value={form.coverLetter} onChange={(event) => setForm({ ...form, coverLetter: event.target.value })} />
+            </Field>
+            <Toolbar title={selectedJob ? "Ready to submit" : "Choose a job first"}>
+              <button type="submit">Submit application</button>
+              <button className="secondary" type="button" onClick={() => loadHistory(form.email)}>
+                Refresh history
+              </button>
+            </Toolbar>
+          </form>
+        </SectionPanel>
+      )}
+
+      {activeSection === "history" && (
+        <SectionPanel title="Application history" description="Candidate-facing statuses stay generalized for privacy.">
+          <DataTable
+            loading={loadingHistory}
+            emptyText="This email has no submitted applications yet."
+            rows={history}
+            columns={[
+              { key: "id", header: "ID" },
+              { key: "jobTitle", header: "Job" },
+              { key: "submittedAt", header: "Submitted", render: (row) => shortDate(row.submittedAt) },
+              { key: "status", header: "Status", render: (row) => <StatusBadge value={row.status} /> },
+            ]}
+          />
+        </SectionPanel>
+      )}
     </div>
   );
 }
