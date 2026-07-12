@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { api } from "../api/client";
+import { API_URL, api } from "../api/client";
 import { DataTable } from "../components/DataTable";
 import { Field } from "../components/Field";
 import { SectionPanel } from "../components/SectionPanel";
@@ -191,6 +191,15 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
     }
   }
 
+  function viewCv(cvFile) {
+    if (!cvFile?.id) {
+      show("No CV file attached", true);
+      return;
+    }
+
+    window.open(`${API_URL}/api/cv-files/${cvFile.id}/download?employerId=${user?.id || 0}`, "_blank", "noopener,noreferrer");
+  }
+
   async function updateInterviewResult(id, result) {
     try {
       const data = await api(`/api/interviews/${id}/result`, {
@@ -300,6 +309,18 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
               { key: "applicantName", header: "Candidate" },
               { key: "candidateEmail", header: "Email" },
               { key: "job", header: "Job", render: (item) => item.job?.title || "" },
+              {
+                key: "cvFile",
+                header: "CV",
+                render: (item) =>
+                  item.cvFile?.id ? (
+                    <button className="secondary" onClick={() => viewCv(item.cvFile)} type="button">
+                      View CV
+                    </button>
+                  ) : (
+                    <span className="muted">No file</span>
+                  ),
+              },
               { key: "applicationStatus", header: "Status", render: (item) => <StatusBadge value={item.applicationStatus} /> },
               {
                 key: "action",

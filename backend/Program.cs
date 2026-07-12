@@ -230,14 +230,15 @@ app.MapPost("/api/applications", async (HttpRequest request, RmsDbContext db, IW
     db.Applications.Add(application);
     await db.SaveChangesAsync();
 
-    db.CvFiles.Add(new CvFile
+    var cvFile = new CvFile
     {
         ApplicationId = application.Id,
         OriginalFileName = file.FileName,
         FileExtension = Path.GetExtension(file.FileName),
         FileSizeMb = Math.Round(file.Length / 1024m / 1024m, 2),
         StorageUrl = savePath
-    });
+    };
+    db.CvFiles.Add(cvFile);
     db.EmailNotifications.Add(new EmailNotification
     {
         RecipientEmail = email.Trim(),
@@ -248,7 +249,11 @@ app.MapPost("/api/applications", async (HttpRequest request, RmsDbContext db, IW
     });
     await db.SaveChangesAsync();
 
-    return Results.Ok(new { message = "Application saved; status New Applied", application });
+    return Results.Ok(new
+    {
+        message = "Application saved; status New Applied",
+        application = ToApplicationResponse(application, job, cvFile)
+    });
 });
 
 app.MapGet("/api/applications", async (
@@ -349,6 +354,45 @@ app.MapGet("/api/candidate/applications", async (string email, RmsDbContext db) 
         })
         .ToListAsync());
 
+app.MapGet("/api/cv-files/{id:int}/download", async (int id, int employerId, RmsDbContext db) =>
+{
+    var actorError = await ValidateActorRole(db, employerId, "Employer", "Employer");
+    if (actorError is not null)
+    {
+        return Results.BadRequest(new { message = actorError });
+    }
+
+    var cvFile = await db.CvFiles
+        .Include(c => c.Application)
+        .ThenInclude(a => a!.Job)
+        .FirstOrDefaultAsync(c => c.Id == id);
+
+    if (cvFile?.Application?.Job is null)
+    {
+        return Results.NotFound(new { message = "CV file not found" });
+    }
+
+    if (cvFile.Application.Job.EmployerId != employerId)
+    {
+        return Results.BadRequest(new { message = "Error: CV file does not belong to this employer" });
+    }
+
+    if (!File.Exists(cvFile.StorageUrl))
+    {
+        return Results.NotFound(new { message = "CV file is missing from storage" });
+    }
+
+    var contentType = cvFile.FileExtension.ToLowerInvariant() switch
+    {
+        ".pdf" => "application/pdf",
+        ".doc" => "application/msword",
+        ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        _ => "application/octet-stream"
+    };
+
+    return Results.File(cvFile.StorageUrl, contentType, cvFile.OriginalFileName, enableRangeProcessing: true);
+});
+
 app.MapPatch("/api/applications/{id:int}/status", async (int id, StatusUpdateRequest request, RmsDbContext db) =>
 {
     var actorError = await ValidateActorRole(db, request.ActorId, "Employer", "Employer");
@@ -391,7 +435,7 @@ app.MapPatch("/api/applications/{id:int}/status", async (int id, StatusUpdateReq
     return Results.Ok(new
     {
         message = application.IsArchived ? "Status updated and application archived" : "Status updated",
-        application
+        application = ToApplicationResponse(application, application.Job, null)
     });
 });
 
@@ -468,7 +512,12 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
     await AddAudit(db, request.ScheduledByUserId, "SCHEDULE_INTERVIEW", "Interview", interview.Id, null, "Scheduled");
     await db.SaveChangesAsync();
 
-    return Results.Ok(new { message = "Interview schedule created; application moved to Interview Scheduled", interview, application });
+    return Results.Ok(new
+    {
+        message = "Interview schedule created; application moved to Interview Scheduled",
+        interview = ToInterviewResponse(interview, application),
+        application = ToApplicationResponse(application, application.Job, null)
+    });
 });
 
 app.MapGet("/api/interviews", async (int employerId, RmsDbContext db) =>
@@ -561,7 +610,12 @@ app.MapPatch("/api/interviews/{id:int}/result", async (int id, InterviewResultRe
     await AddAudit(db, request.ActorId, "UPDATE_INTERVIEW_RESULT", "Interview", interview.Id, oldStatus, newStatus);
     await db.SaveChangesAsync();
 
-    return Results.Ok(new { message = $"Interview marked {request.Result.ToLowerInvariant()}", interview, application = interview.Application });
+    return Results.Ok(new
+    {
+        message = $"Interview marked {request.Result.ToLowerInvariant()}",
+        interview = ToInterviewResponse(interview, interview.Application),
+        application = ToApplicationResponse(interview.Application, interview.Application.Job, null)
+    });
 });
 
 app.MapPost("/api/admin/reset-demo-data", async (ResetDemoDataRequest request, RmsDbContext db, IWebHostEnvironment env) =>
@@ -680,6 +734,10 @@ app.MapPatch("/api/admin/users/{id:int}", async (int id, UpdateUserRequest reque
         {
             return Results.BadRequest(new { message = "Error: Invalid role" });
         }
+        if (user.Role == "Admin" && request.Role != "Admin")
+        {
+            return Results.BadRequest(new { message = "Error: Admin account role cannot be changed" });
+        }
         user.Role = request.Role;
     }
 
@@ -689,6 +747,10 @@ app.MapPatch("/api/admin/users/{id:int}", async (int id, UpdateUserRequest reque
         if (!allowedStatuses.Contains(request.AccountStatus))
         {
             return Results.BadRequest(new { message = "Error: Invalid account status" });
+        }
+        if (user.Role == "Admin" && request.AccountStatus == "Locked")
+        {
+            return Results.BadRequest(new { message = "Error: Admin account cannot be locked" });
         }
         user.AccountStatus = request.AccountStatus;
     }
@@ -814,6 +876,61 @@ static async Task<List<InterviewListItem>> BuildInterviewList(RmsDbContext db, L
             .Select(participant => participant.FullName)
             .ToList()
     )).ToList();
+}
+
+static object ToApplicationResponse(Application application, JobPost? job, CvFile? cvFile)
+{
+    return new
+    {
+        application.Id,
+        application.JobId,
+        application.CandidateEmail,
+        application.ApplicantName,
+        application.ApplicantPhone,
+        application.CoverLetter,
+        application.ApplicationStatus,
+        application.IsArchived,
+        application.SubmittedAt,
+        application.UpdatedAt,
+        Job = job is null ? null : new
+        {
+            job.Id,
+            job.Title,
+            job.Location,
+            job.Level
+        },
+        CvFile = cvFile is null ? null : new
+        {
+            cvFile.Id,
+            cvFile.OriginalFileName,
+            cvFile.FileExtension,
+            cvFile.FileSizeMb
+        }
+    };
+}
+
+static object ToInterviewResponse(Interview interview, Application? application)
+{
+    return new
+    {
+        interview.Id,
+        interview.ApplicationId,
+        interview.ScheduledByUserId,
+        interview.InterviewTime,
+        interview.InterviewMode,
+        interview.LocationOrLink,
+        interview.InterviewStatus,
+        interview.EmailSent,
+        interview.CreatedAt,
+        Application = application is null ? null : new
+        {
+            application.Id,
+            application.JobId,
+            application.ApplicantName,
+            application.CandidateEmail,
+            application.ApplicationStatus
+        }
+    };
 }
 
 static async Task ResetDemoData(RmsDbContext db, IWebHostEnvironment env)
