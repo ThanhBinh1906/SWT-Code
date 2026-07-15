@@ -175,7 +175,7 @@ textarea {
 }
 
 .login-panel {
-  width: min(440px, 100%);
+  width: min(760px, 100%);
   border: 0;
   border-radius: 0;
   background: #ffffff;
@@ -231,6 +231,106 @@ textarea {
   font-size: 24px;
   font-weight: 800;
   line-height: 1.2;
+}
+
+.login-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 28px;
+  align-items: start;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 7px;
+}
+
+.login-form label span,
+.demo-account-list > span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.login-inline-error {
+  margin: -2px 0 0;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: #fef2f2;
+  color: #991b1b;
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.demo-account-list {
+  display: grid;
+  gap: 8px;
+  padding-left: 22px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.demo-account {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  min-height: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f172a;
+  padding: 10px;
+  text-align: left;
+  box-shadow: none;
+}
+
+.demo-account:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+.demo-account.active,
+.demo-account.active:hover {
+  border-color: #0f172a;
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.demo-account strong {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.demo-account small {
+  grid-column: 1 / -1;
+  color: inherit;
+  font-size: 12px;
+  opacity: 0.78;
+  overflow-wrap: anywhere;
+}
+
+.demo-account code {
+  align-self: start;
+  border-radius: 4px;
+  background: #eef2f7;
+  color: #475569;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.demo-account.active code {
+  background: rgb(255 255 255 / 14%);
+  color: #ffffff;
 }
 
 .role-selector {
@@ -322,7 +422,7 @@ textarea {
 }
 
 .login-message {
-  width: min(440px, calc(100% - 48px));
+  width: min(760px, calc(100% - 48px));
   margin: -42px auto 24px;
 }
 
@@ -990,6 +1090,18 @@ td {
 @media (max-width: 760px) {
   .login-panel {
     width: min(440px, 100%);
+  }
+
+  .login-content {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .demo-account-list {
+    padding-top: 18px;
+    padding-left: 0;
+    border-top: 1px solid #e2e8f0;
+    border-left: 0;
   }
 
   .login-message {

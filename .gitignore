@@ -9,3 +9,7 @@ frontend/node_modules/
 frontend/dist/
 .vs/
 .vscode/
+outputs/
+testing/
+work/
+

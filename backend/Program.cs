@@ -58,17 +58,23 @@ app.MapGet("/api/jobs", async (
 
     if (!string.IsNullOrWhiteSpace(keyword))
     {
-        query = query.Where(j => j.Title.Contains(keyword) || j.JobDescription.Contains(keyword) || j.JobRequirements.Contains(keyword));
+        var keywordPattern = $"%{keyword.Trim()}%";
+        query = query.Where(j =>
+            EF.Functions.Like(j.Title, keywordPattern) ||
+            EF.Functions.Like(j.JobDescription, keywordPattern) ||
+            EF.Functions.Like(j.JobRequirements, keywordPattern));
     }
 
     if (!string.IsNullOrWhiteSpace(location))
     {
-        query = query.Where(j => j.Location.Contains(location));
+        var locationPattern = $"%{location.Trim()}%";
+        query = query.Where(j => EF.Functions.Like(j.Location, locationPattern));
     }
 
     if (!string.IsNullOrWhiteSpace(level))
     {
-        query = query.Where(j => j.Level.Contains(level));
+        var levelPattern = $"%{level.Trim()}%";
+        query = query.Where(j => EF.Functions.Like(j.Level, levelPattern));
     }
 
     if (minSalary is not null)
