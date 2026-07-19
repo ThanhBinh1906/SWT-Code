@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import { EMAIL_DELIVERY_LOCKED, sendDemoEmail } from "../api/email";
 import { DataTable } from "../components/DataTable";
 import { Field } from "../components/Field";
 import { SectionPanel } from "../components/SectionPanel";
@@ -13,6 +14,7 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
   const [logs, setLogs] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [auditFilters, setAuditFilters] = useState({ userId: "", actionType: "", from: "", to: "" });
   const [form, setForm] = useState({
     fullName: "HR Staff Demo",
     email: "hrstaff@company.com",
@@ -35,13 +37,31 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
     [jobs]
   );
 
+  function buildAdminQuery(actor = user) {
+    return `actorId=${actor?.id || 0}&actorRole=${encodeURIComponent(actor?.role || "")}`;
+  }
+
+  function buildAuditQuery(actor = user, filters = auditFilters) {
+    const params = new URLSearchParams({
+      actorId: String(actor?.id || 0),
+      actorRole: actor?.role || "",
+    });
+
+    if (filters.userId.trim()) params.set("userId", filters.userId.trim());
+    if (filters.actionType.trim()) params.set("actionType", filters.actionType.trim());
+    if (filters.from) params.set("from", filters.from);
+    if (filters.to) params.set("to", filters.to);
+
+    return params.toString();
+  }
+
   async function loadAdminData(actor = user) {
     try {
       setLoading(true);
-      const adminQuery = `actorId=${actor?.id || 0}&actorRole=${encodeURIComponent(actor?.role || "")}`;
+      const adminQuery = buildAdminQuery(actor);
       const [userData, logData, jobData] = await Promise.all([
         api(`/api/admin/users?${adminQuery}`),
-        api(`/api/admin/audit-logs?${adminQuery}`),
+        api(`/api/admin/audit-logs?${buildAuditQuery(actor)}`),
         api(`/api/admin/jobs?${adminQuery}`),
       ]);
       setUsers(userData);
@@ -53,6 +73,25 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadAuditLogs(filters = auditFilters) {
+    try {
+      setLoading(true);
+      const data = await api(`/api/admin/audit-logs?${buildAuditQuery(user, filters)}`);
+      setLogs(data);
+      show(data.length ? `Found ${data.length} audit record(s)` : "No audit records found");
+    } catch (error) {
+      show(error.message, true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function clearAuditFilters() {
+    const emptyFilters = { userId: "", actionType: "", from: "", to: "" };
+    setAuditFilters(emptyFilters);
+    loadAuditLogs(emptyFilters);
   }
 
   async function createAccount() {
@@ -109,6 +148,18 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
   async function testReadOnlyLog() {
     try {
       await api("/api/admin/audit-logs/1", { method: "DELETE" });
+    } catch (error) {
+      show(error.message, true);
+    }
+  }
+
+  async function sendTestEmail() {
+    try {
+      await sendDemoEmail({
+        recipientEmail: "demo@example.com",
+        subject: "RMS demo email",
+        body: "This action is locked in demo mode.",
+      });
     } catch (error) {
       show(error.message, true);
     }
@@ -250,11 +301,44 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
           title="Audit logs"
           description="Read-only records for sensitive actions."
           actions={
-            <button className="danger" onClick={testReadOnlyLog}>
-              Try delete audit log
-            </button>
+            <>
+              <button className="secondary" disabled={EMAIL_DELIVERY_LOCKED} onClick={sendTestEmail}>
+                Send test email
+              </button>
+              <button className="danger" onClick={testReadOnlyLog}>
+                Try delete audit log
+              </button>
+            </>
           }
         >
+          <div className="selected-job-note">
+            <strong>Email delivery locked</strong>
+            <span>RMS stores email notification records for demo, but SMTP sending is disabled.</span>
+          </div>
+          <div className="form-grid">
+            <Field label="User ID" required={false}>
+              <input value={auditFilters.userId} onChange={(event) => setAuditFilters({ ...auditFilters, userId: event.target.value })} />
+            </Field>
+            <Field label="Action type" required={false}>
+              <input
+                value={auditFilters.actionType}
+                placeholder="SCHEDULE_INTERVIEW"
+                onChange={(event) => setAuditFilters({ ...auditFilters, actionType: event.target.value })}
+              />
+            </Field>
+            <Field label="From" required={false}>
+              <input type="date" value={auditFilters.from} onChange={(event) => setAuditFilters({ ...auditFilters, from: event.target.value })} />
+            </Field>
+            <Field label="To" required={false}>
+              <input type="date" value={auditFilters.to} onChange={(event) => setAuditFilters({ ...auditFilters, to: event.target.value })} />
+            </Field>
+          </div>
+          <Toolbar title="Audit search">
+            <button onClick={() => loadAuditLogs()}>Search logs</button>
+            <button className="secondary" onClick={clearAuditFilters}>
+              Clear
+            </button>
+          </Toolbar>
           <DataTable
             loading={loading}
             rows={logs}

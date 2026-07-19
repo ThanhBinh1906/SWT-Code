@@ -1,26 +1,30 @@
 # RMS SWT Demo
 
-Hệ thống demo tối giản cho môn SWT:
+He thong demo Recruitment Management System (RMS) phuc vu mon Software Testing.
 
 - Frontend: React + Vite
 - Backend: ASP.NET Core Minimal API
 - Database: SQLite file `backend/rms-swt.db`
-- Auth: login demo theo role, chưa dùng JWT
-- Email: mock bằng bảng `EmailNotifications`
-- CV upload: lưu file local trong `backend/uploads/cv`
+- Auth: demo login theo role, chua dung JWT
+- Email: co helper/endpoint san trong backend, nhung delivery bi lock trong demo; he thong chi luu `EmailNotifications`
+- CV upload: luu file local trong `backend/uploads/cv`
 
-## Tài khoản demo
+## Demo-only scope
 
-| Role | Email |
-| --- | --- |
-| Admin | admin@company.com |
-| Employer | employer@company.com |
-| Interviewer | interviewer@company.com |
-| Candidate | candidate@example.com |
+- Password `12345` duoc validate o frontend de man hinh login trong chinh chu hon. Backend hien chi nhan email/role cho demo, chua co password hash hay JWT.
+- `Reset demo data` la endpoint ho tro test lai flow. Sau khi reset, frontend logout ve Login de tranh lech session/state.
+- Email phong van va email xac nhan co ham san o backend/frontend, nhung SMTP delivery bi khoa trong demo vi dung email gia. He thong chi tao notification record voi status `DemoLocked`.
 
-Frontend đăng nhập bằng tài khoản demo theo role đã chọn.
+## Tai khoan demo
 
-## Chạy backend
+| Role | Email | Password |
+| --- | --- | --- |
+| Admin | admin@company.com | 12345 |
+| Employer | employer@company.com | 12345 |
+| Interviewer | interviewer@company.com | 12345 |
+| Candidate | candidate@example.com | 12345 |
+
+## Chay backend
 
 ```powershell
 cd backend
@@ -28,17 +32,17 @@ dotnet restore
 dotnet run
 ```
 
-Backend mặc định chạy tại:
+Backend mac dinh chay tai:
 
 ```text
 http://localhost:5082
 ```
 
-SQLite DB sẽ được tạo tự động khi backend chạy lần đầu.
+SQLite DB se duoc tao tu dong khi backend chay lan dau.
 
-## Chạy frontend
+## Chay frontend
 
-Mở terminal khác:
+Mo terminal khac:
 
 ```powershell
 cd frontend
@@ -46,19 +50,19 @@ npm install
 npm run dev
 ```
 
-Frontend đang chạy ở port:
+Frontend mac dinh chay tai:
 
 ```text
 http://127.0.0.1:5174
 ```
 
-Frontend mặc định gọi API:
+Frontend mac dinh goi API:
 
 ```text
 http://localhost:5082
 ```
 
-Nếu backend đổi port:
+Neu backend doi port:
 
 ```powershell
 $env:VITE_API_URL="http://localhost:PORT"
@@ -67,41 +71,43 @@ npm run dev
 
 ## Demo script
 
-Xem [DEMO_SCRIPT.md](./DEMO_SCRIPT.md) để chạy kịch bản demo 5 phút theo từng role.
+Xem [DEMO_SCRIPT.md](./DEMO_SCRIPT.md) de chay kich ban demo 5 phut theo tung role.
 
-Lưu ý: Admin reset demo data sẽ đưa người dùng về màn Login để tránh lệch session sau khi seed lại database.
-
-## Scope chức năng
+## Scope chuc nang
 
 Candidate:
 
-- Search/filter active jobs
-- Submit application với CV
+- Search/filter active jobs theo keyword, location, level
+- View job detail before applying
+- Chon job va nop application kem CV
 - Validate required info, email, phone, CV extension, CV size <= 5MB
-- Chặn duplicate application cùng email/job trong 30 ngày nếu hồ sơ chưa bị reject
-- Track application status
+- Chan duplicate application cung email/job trong 30 ngay neu ho so chua bi reject
+- Track application status bang history
 
 Employer:
 
-- Create job post và submit pending approval
-- View job/application thuộc employer hiện tại
+- Create job post, save draft, submit pending approval
+- View job/application thuoc employer hien tai
+- Xem CV ung vien da nop
 - Pass/reject CV
-- Schedule interview cho application đã `CV Passed`
+- Schedule interview cho application da `CV Passed`
 - View interviews, pass/fail interview
-- Offer hoặc mark hired cho candidate phù hợp
+- Offer hoac mark hired cho candidate phu hop
 
 Interviewer:
 
+- Login demo bang role Interviewer
 - View assigned interview schedule
-- Dashboard read-only cho lịch được phân công
+- Dashboard read-only cho lich duoc phan cong
 
 Admin:
 
-- Create staff account với email `@company.com`
+- Create staff account voi email `@company.com`
 - Assign role, lock/unlock account
-- Approve/reject job đang `Pending Approval`
-- View audit logs
-- Reset demo data để test lại flow từ đầu
+- Khong cho lock tai khoan Admin
+- Approve/reject job dang `Pending Approval`
+- View/search audit logs
+- Reset demo data de test lai flow tu dau
 
 ## Endpoint smoke test nhanh
 
@@ -109,6 +115,6 @@ Admin:
 Invoke-RestMethod http://localhost:5082/api/health
 ```
 
-## Ghi chú
+## Ghi chu build
 
-Build hiện có thể báo warning NuGet `NU1903` từ dependency `Microsoft.OpenApi` và `SQLitePCLRaw.lib.e_sqlite3`. Warning này không chặn demo/build, nhưng nếu cần nộp sạch warning thì cần nâng/pin package lên bản đã vá.
+Build co the bao warning NuGet `NU1903` tu dependency `Microsoft.OpenApi` va `SQLitePCLRaw.lib.e_sqlite3`. Warning nay khong chan demo/build. Neu can nop sach warning, can nang/pin package len ban da va.

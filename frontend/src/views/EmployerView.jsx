@@ -90,6 +90,10 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
       show("Quantity must be greater than 0", true);
       return;
     }
+    if (!Number.isInteger(Number(jobForm.quantity))) {
+      show("Quantity must be integer", true);
+      return;
+    }
     if (Number.isNaN(deadline.getTime()) || deadline < minDeadline) {
       show("Deadline must be at least 3 days from today", true);
       return;

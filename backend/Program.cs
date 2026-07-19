@@ -31,6 +31,12 @@ using (var scope = app.Services.CreateScope())
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "OK", app = "RMS SWT API" }));
 
+app.MapPost("/api/email/send", (EmailSendRequest request) =>
+{
+    var result = DemoEmailSender.TrySend(request.RecipientEmail, request.Subject, request.Body);
+    return Results.BadRequest(new { message = result.Message, locked = DemoEmailSender.DeliveryLocked });
+});
+
 app.MapPost("/api/auth/login", async (LoginRequest request, RmsDbContext db) =>
 {
     var user = await db.Users
@@ -245,14 +251,12 @@ app.MapPost("/api/applications", async (HttpRequest request, RmsDbContext db, IW
         StorageUrl = savePath
     };
     db.CvFiles.Add(cvFile);
-    db.EmailNotifications.Add(new EmailNotification
-    {
-        RecipientEmail = email.Trim(),
-        EmailType = "ApplicationConfirmation",
-        Subject = "Application submitted",
-        SendStatus = "MockSent",
-        RelatedApplicationId = application.Id
-    });
+    db.EmailNotifications.Add(DemoEmailSender.Queue(
+        email.Trim(),
+        "ApplicationConfirmation",
+        "Application submitted",
+        application.Id,
+        null));
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -292,7 +296,10 @@ app.MapGet("/api/applications", async (
 
     if (!string.IsNullOrWhiteSpace(keyword))
     {
-        query = query.Where(a => a.ApplicantName.Contains(keyword) || a.CandidateEmail.Contains(keyword));
+        var keywordPattern = $"%{keyword.Trim()}%";
+        query = query.Where(a =>
+            EF.Functions.Like(a.ApplicantName, keywordPattern) ||
+            EF.Functions.Like(a.CandidateEmail, keywordPattern));
     }
 
     if (!includeArchived)
@@ -478,7 +485,7 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
         InterviewMode = request.InterviewMode,
         LocationOrLink = request.LocationOrLink?.Trim() ?? "",
         InterviewStatus = "Scheduled",
-        EmailSent = true
+        EmailSent = !DemoEmailSender.DeliveryLocked
     };
     db.Interviews.Add(interview);
     await db.SaveChangesAsync();
@@ -506,15 +513,12 @@ app.MapPost("/api/interviews", async (InterviewRequest request, RmsDbContext db)
     }
 
     var candidateEmail = application.CandidateEmail;
-    db.EmailNotifications.Add(new EmailNotification
-    {
-        RecipientEmail = candidateEmail,
-        EmailType = "InterviewInvitation",
-        Subject = "Interview invitation",
-        SendStatus = "MockSent",
-        RelatedApplicationId = application.Id,
-        RelatedInterviewId = interview.Id
-    });
+    db.EmailNotifications.Add(DemoEmailSender.Queue(
+        candidateEmail,
+        "InterviewInvitation",
+        "Interview invitation",
+        application.Id,
+        interview.Id));
     await AddAudit(db, request.ScheduledByUserId, "SCHEDULE_INTERVIEW", "Interview", interview.Id, null, "Scheduled");
     await db.SaveChangesAsync();
 
@@ -705,13 +709,12 @@ app.MapPost("/api/admin/users", async (CreateUserRequest request, RmsDbContext d
     db.Users.Add(user);
     await db.SaveChangesAsync();
 
-    db.EmailNotifications.Add(new EmailNotification
-    {
-        RecipientEmail = user.Email,
-        EmailType = "PasswordSetup",
-        Subject = "Setup your RMS password",
-        SendStatus = "MockSent"
-    });
+    db.EmailNotifications.Add(DemoEmailSender.Queue(
+        user.Email,
+        "PasswordSetup",
+        "Setup your RMS password",
+        null,
+        null));
     await AddAudit(db, request.ActorId, "CREATE_ACCOUNT", "User", user.Id, null, "Active");
     await db.SaveChangesAsync();
 
@@ -791,7 +794,8 @@ app.MapGet("/api/admin/audit-logs", async (
 
     if (!string.IsNullOrWhiteSpace(actionType))
     {
-        query = query.Where(l => l.ActionType.Contains(actionType));
+        var actionTypePattern = $"%{actionType.Trim()}%";
+        query = query.Where(l => EF.Functions.Like(l.ActionType, actionTypePattern));
     }
 
     if (from is not null)
@@ -1103,7 +1107,7 @@ public class EmailNotification
     public string RecipientEmail { get; set; } = "";
     public string EmailType { get; set; } = "";
     public string Subject { get; set; } = "";
-    public string SendStatus { get; set; } = "MockSent";
+    public string SendStatus { get; set; } = "DemoLocked";
     public int? RelatedApplicationId { get; set; }
     public int? RelatedInterviewId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -1172,6 +1176,43 @@ public record CreateUserRequest(int ActorId, string ActorRole, string FullName, 
 public record UpdateUserRequest(int ActorId, string ActorRole, string? Role, string? AccountStatus);
 
 public record ResetDemoDataRequest(int ActorId, string ActorRole, string? ActorEmail);
+
+public record EmailSendRequest(string RecipientEmail, string Subject, string? Body);
+
+public record DemoEmailResult(bool Sent, string Message);
+
+public static class DemoEmailSender
+{
+    public static bool DeliveryLocked => true;
+
+    public static DemoEmailResult TrySend(string recipientEmail, string subject, string? body)
+    {
+        if (DeliveryLocked)
+        {
+            return new DemoEmailResult(false, "Email delivery is locked in demo mode. Notification records are stored only.");
+        }
+
+        return new DemoEmailResult(true, "Email sent");
+    }
+
+    public static EmailNotification Queue(
+        string recipientEmail,
+        string emailType,
+        string subject,
+        int? applicationId,
+        int? interviewId)
+    {
+        return new EmailNotification
+        {
+            RecipientEmail = recipientEmail,
+            EmailType = emailType,
+            Subject = subject,
+            SendStatus = DeliveryLocked ? "DemoLocked" : "Sent",
+            RelatedApplicationId = applicationId,
+            RelatedInterviewId = interviewId
+        };
+    }
+}
 
 public static class SeedData
 {

@@ -16,6 +16,7 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
   const [selectedJob, setSelectedJob] = useState(null);
   const [history, setHistory] = useState([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
+  const [loadingJobDetail, setLoadingJobDetail] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [filters, setFilters] = useState({ keyword: "", location: "", level: "" });
   const [form, setForm] = useState({
@@ -56,6 +57,19 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
       show(error.message, true);
     } finally {
       setLoadingHistory(false);
+    }
+  }
+
+  async function viewJobDetail(id) {
+    try {
+      setLoadingJobDetail(true);
+      const data = await api(`/api/jobs/${id}`);
+      setSelectedJob(data);
+      show(`Viewing job detail: ${data.title} #${data.id}`);
+    } catch (error) {
+      show(error.message, true);
+    } finally {
+      setLoadingJobDetail(false);
     }
   }
 
@@ -149,20 +163,57 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
                 key: "action",
                 header: "Action",
                 render: (job) => (
-                  <button
-                    className={selectedJob?.id === job.id ? "secondary" : ""}
-                    onClick={() => {
-                      setSelectedJob(job);
-                      show(`Selected job: ${job.title} #${job.id}`);
-                      onSectionChange("apply");
-                    }}
-                  >
-                    {selectedJob?.id === job.id ? "Selected" : "Select this job"}
-                  </button>
+                  <div className="row-actions">
+                    <button className="secondary" onClick={() => viewJobDetail(job.id)}>
+                      View detail
+                    </button>
+                    <button
+                      className={selectedJob?.id === job.id ? "secondary" : ""}
+                      onClick={() => {
+                        setSelectedJob(job);
+                        show(`Selected job: ${job.title} #${job.id}`);
+                        onSectionChange("apply");
+                      }}
+                    >
+                      {selectedJob?.id === job.id ? "Selected" : "Apply"}
+                    </button>
+                  </div>
                 ),
               },
             ]}
           />
+
+          {selectedJob && (
+            <div className="job-detail-panel">
+              <div>
+                <strong>{selectedJob.title}</strong>
+                <span>
+                  {selectedJob.department || "General"} - {selectedJob.location} - {selectedJob.level}
+                </span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Salary</dt>
+                  <dd>
+                    {selectedJob.salaryMin} - {selectedJob.salaryMax} {selectedJob.salaryType}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Quantity</dt>
+                  <dd>{selectedJob.quantity}</dd>
+                </div>
+                <div>
+                  <dt>Deadline</dt>
+                  <dd>{shortDate(selectedJob.deadline)}</dd>
+                </div>
+              </dl>
+              <p>{selectedJob.jobDescription}</p>
+              <p>{selectedJob.jobRequirements}</p>
+              <Toolbar title={loadingJobDetail ? "Loading detail" : "Job detail"}>
+                <button onClick={() => onSectionChange("apply")}>Apply to this job</button>
+              </Toolbar>
+            </div>
+          )}
         </SectionPanel>
       )}
 

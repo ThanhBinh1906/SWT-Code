@@ -857,6 +857,10 @@ textarea {
   color: #f97316;
 }
 
+.field > span.optional::after {
+  content: none;
+}
+
 .field small {
   color: var(--muted);
 }
@@ -896,6 +900,46 @@ textarea {
 .selected-job-note span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.job-detail-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+}
+
+.job-detail-panel > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.job-detail-panel span,
+.job-detail-panel p {
+  color: var(--muted);
+}
+
+.job-detail-panel dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.job-detail-panel dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.job-detail-panel dd {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-weight: 700;
 }
 
 .toolbar input,
