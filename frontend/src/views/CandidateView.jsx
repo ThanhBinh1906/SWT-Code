@@ -27,6 +27,7 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
   });
   const [cvFile, setCvFile] = useState(null);
   const [cvInputKey, setCvInputKey] = useState(0);
+  const [invalidFields, setInvalidFields] = useState({});
 
   const pendingCount = useMemo(
     () => history.filter((item) => item.status !== "Rejected").length,
@@ -75,25 +76,34 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
 
   async function submitApplication(event) {
     event.preventDefault();
+    setInvalidFields({});
     if (!selectedJob) {
       show("Select a job first", true);
       return;
     }
     if (!form.fullName.trim() || !form.email.trim() || !form.phone.trim()) {
+      setInvalidFields({
+        fullName: !form.fullName.trim(),
+        email: !form.email.trim(),
+        phone: !form.phone.trim(),
+      });
       show("Full name, email, and phone are required", true);
       return;
     }
     if (!form.email.includes("@")) {
+      setInvalidFields({ email: true });
       show("Email is invalid", true);
       return;
     }
     if (!cvFile) {
+      setInvalidFields({ cvFile: true });
       show("CV file is required", true);
       return;
     }
     const allowedExtensions = [".pdf", ".doc", ".docx"];
     const lowerName = cvFile.name.toLowerCase();
     if (!allowedExtensions.some((extension) => lowerName.endsWith(extension))) {
+      setInvalidFields({ cvFile: true });
       show("CV format must be .pdf, .doc, or .docx", true);
       return;
     }
@@ -111,6 +121,7 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
       show(data.message);
       loadHistory(form.email);
       setCvFile(null);
+      setInvalidFields({});
       setCvInputKey((value) => value + 1);
       onSectionChange("history");
     } catch (error) {
@@ -233,16 +244,45 @@ export function CandidateView({ activeSection, user, show, onSectionChange }) {
           <form onSubmit={submitApplication}>
             <div className="form-grid">
               <Field label="Full name">
-                <input value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
+                <input
+                  value={form.fullName}
+                  aria-invalid={invalidFields.fullName ? "true" : undefined}
+                  onChange={(event) => {
+                    setForm({ ...form, fullName: event.target.value });
+                    setInvalidFields({ ...invalidFields, fullName: false });
+                  }}
+                />
               </Field>
               <Field label="Email">
-                <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+                <input
+                  value={form.email}
+                  aria-invalid={invalidFields.email ? "true" : undefined}
+                  onChange={(event) => {
+                    setForm({ ...form, email: event.target.value });
+                    setInvalidFields({ ...invalidFields, email: false });
+                  }}
+                />
               </Field>
               <Field label="Phone">
-                <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+                <input
+                  value={form.phone}
+                  aria-invalid={invalidFields.phone ? "true" : undefined}
+                  onChange={(event) => {
+                    setForm({ ...form, phone: event.target.value });
+                    setInvalidFields({ ...invalidFields, phone: false });
+                  }}
+                />
               </Field>
               <Field label="CV file" help=".pdf, .doc, .docx. Maximum 5MB.">
-                <input key={cvInputKey} type="file" onChange={(event) => setCvFile(event.target.files?.[0] || null)} />
+                <input
+                  key={cvInputKey}
+                  type="file"
+                  aria-invalid={invalidFields.cvFile ? "true" : undefined}
+                  onChange={(event) => {
+                    setCvFile(event.target.files?.[0] || null);
+                    setInvalidFields({ ...invalidFields, cvFile: false });
+                  }}
+                />
               </Field>
             </div>
             <Field label="Cover letter">

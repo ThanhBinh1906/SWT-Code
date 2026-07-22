@@ -34,6 +34,8 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
     locationOrLink: "https://meet.example.com/rms",
     interviewerUserIds: [],
   });
+  const [invalidJobFields, setInvalidJobFields] = useState({});
+  const [invalidInterviewFields, setInvalidInterviewFields] = useState({});
 
   const jobStats = useMemo(
     () => ({
@@ -82,19 +84,27 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
     const minDeadline = new Date();
     minDeadline.setHours(0, 0, 0, 0);
     minDeadline.setDate(minDeadline.getDate() + 3);
+    setInvalidJobFields({});
     if (!jobForm.title.trim() || !jobForm.jobDescription.trim()) {
+      setInvalidJobFields({
+        title: !jobForm.title.trim(),
+        jobDescription: !jobForm.jobDescription.trim(),
+      });
       show("Title and job description are required", true);
       return;
     }
     if (Number(jobForm.quantity) <= 0) {
+      setInvalidJobFields({ quantity: true });
       show("Quantity must be greater than 0", true);
       return;
     }
     if (!Number.isInteger(Number(jobForm.quantity))) {
+      setInvalidJobFields({ quantity: true });
       show("Quantity must be integer", true);
       return;
     }
     if (Number.isNaN(deadline.getTime()) || deadline < minDeadline) {
+      setInvalidJobFields({ deadline: true });
       show("Deadline must be at least 3 days from today", true);
       return;
     }
@@ -151,24 +161,30 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
   }
 
   async function scheduleInterview() {
+    setInvalidInterviewFields({});
     if (!selectedApplicationId) {
+      setInvalidInterviewFields({ candidate: true });
       show("Select a CV Passed application first", true);
       return;
     }
     if (!interviewForm.interviewerUserIds.length) {
+      setInvalidInterviewFields({ interviewers: true });
       show("Select at least one interviewer", true);
       return;
     }
     const interviewTime = new Date(interviewForm.interviewTime);
     if (Number.isNaN(interviewTime.getTime())) {
+      setInvalidInterviewFields({ interviewTime: true });
       show("Interview time is required", true);
       return;
     }
     if ([0, 6].includes(interviewTime.getDay())) {
+      setInvalidInterviewFields({ interviewTime: true });
       show("Interview must be Monday-Friday", true);
       return;
     }
     if (interviewForm.interviewMode === "Online" && !interviewForm.locationOrLink.trim()) {
+      setInvalidInterviewFields({ locationOrLink: true });
       show("Online meeting link is required", true);
       return;
     }
@@ -188,6 +204,7 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
       });
       show(data.message);
       setSelectedApplicationId("");
+      setInvalidInterviewFields({});
       loadEmployerData();
       onSectionChange("interviews");
     } catch (error) {
@@ -212,6 +229,7 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
         body: JSON.stringify({ actorId: user?.id || 0, actorRole: user?.role || "", result }),
       });
       show(data.message);
+      setInvalidJobFields({});
       loadEmployerData();
     } catch (error) {
       show(error.message, true);
@@ -257,13 +275,24 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
                   <input
                     type={key === "deadline" ? "date" : ["quantity", "salaryMin", "salaryMax"].includes(key) ? "number" : "text"}
                     value={jobForm[key]}
-                    onChange={(event) => setJobForm({ ...jobForm, [key]: event.target.value })}
+                    aria-invalid={invalidJobFields[key] ? "true" : undefined}
+                    onChange={(event) => {
+                      setJobForm({ ...jobForm, [key]: event.target.value });
+                      setInvalidJobFields({ ...invalidJobFields, [key]: false });
+                    }}
                   />
                 </Field>
               ))}
             </div>
             <Field label="Job description">
-              <textarea value={jobForm.jobDescription} onChange={(event) => setJobForm({ ...jobForm, jobDescription: event.target.value })} />
+              <textarea
+                value={jobForm.jobDescription}
+                aria-invalid={invalidJobFields.jobDescription ? "true" : undefined}
+                onChange={(event) => {
+                  setJobForm({ ...jobForm, jobDescription: event.target.value });
+                  setInvalidJobFields({ ...invalidJobFields, jobDescription: false });
+                }}
+              />
             </Field>
             <Field label="Job requirements">
               <textarea value={jobForm.jobRequirements} onChange={(event) => setJobForm({ ...jobForm, jobRequirements: event.target.value })} />
@@ -362,7 +391,14 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
         <SectionPanel title="Schedule interview" description="Choose a CV-passed candidate and assign interviewers.">
           <div className="form-grid">
             <Field label="Candidate">
-              <select value={selectedApplicationId} onChange={(event) => setSelectedApplicationId(event.target.value)}>
+              <select
+                value={selectedApplicationId}
+                aria-invalid={invalidInterviewFields.candidate ? "true" : undefined}
+                onChange={(event) => {
+                  setSelectedApplicationId(event.target.value);
+                  setInvalidInterviewFields({ ...invalidInterviewFields, candidate: false });
+                }}
+              >
                 <option value="">Select CV Passed application</option>
                 {readyForInterview.map((item) => (
                   <option key={item.id} value={item.id}>
@@ -375,7 +411,11 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
               <input
                 type="datetime-local"
                 value={interviewForm.interviewTime}
-                onChange={(event) => setInterviewForm({ ...interviewForm, interviewTime: event.target.value })}
+                aria-invalid={invalidInterviewFields.interviewTime ? "true" : undefined}
+                onChange={(event) => {
+                  setInterviewForm({ ...interviewForm, interviewTime: event.target.value });
+                  setInvalidInterviewFields({ ...invalidInterviewFields, interviewTime: false });
+                }}
               />
             </Field>
             <Field label="Mode">
@@ -385,18 +425,27 @@ export function EmployerView({ activeSection, user, show, onSectionChange }) {
               </select>
             </Field>
             <Field label="Link / Room">
-              <input value={interviewForm.locationOrLink} onChange={(event) => setInterviewForm({ ...interviewForm, locationOrLink: event.target.value })} />
+              <input
+                value={interviewForm.locationOrLink}
+                aria-invalid={invalidInterviewFields.locationOrLink ? "true" : undefined}
+                onChange={(event) => {
+                  setInterviewForm({ ...interviewForm, locationOrLink: event.target.value });
+                  setInvalidInterviewFields({ ...invalidInterviewFields, locationOrLink: false });
+                }}
+              />
             </Field>
             <Field label="Interviewers">
               <select
                 multiple
                 value={interviewForm.interviewerUserIds}
-                onChange={(event) =>
+                aria-invalid={invalidInterviewFields.interviewers ? "true" : undefined}
+                onChange={(event) => {
                   setInterviewForm({
                     ...interviewForm,
                     interviewerUserIds: Array.from(event.target.selectedOptions).map((option) => option.value),
-                  })
-                }
+                  });
+                  setInvalidInterviewFields({ ...invalidInterviewFields, interviewers: false });
+                }}
               >
                 {interviewers.map((item) => (
                   <option key={item.id} value={item.id}>

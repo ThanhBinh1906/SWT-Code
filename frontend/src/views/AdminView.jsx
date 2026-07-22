@@ -21,6 +21,7 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
     phone: "0900000000",
     role: "Employer",
   });
+  const [invalidFields, setInvalidFields] = useState({});
 
   const stats = useMemo(
     () => ({
@@ -95,11 +96,18 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
   }
 
   async function createAccount() {
+    setInvalidFields({});
     if (!form.fullName.trim() || !form.email.trim() || !form.phone.trim()) {
+      setInvalidFields({
+        fullName: !form.fullName.trim(),
+        email: !form.email.trim(),
+        phone: !form.phone.trim(),
+      });
       show("Full name, email, and phone are required", true);
       return;
     }
     if (!form.email.toLowerCase().endsWith("@company.com")) {
+      setInvalidFields({ email: true });
       show("Company email must end with @company.com", true);
       return;
     }
@@ -111,6 +119,7 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
         body: JSON.stringify({ ...form, actorId: user?.id || 0, actorRole: user?.role || "" }),
       });
       show(data.message);
+      setInvalidFields({});
       loadAdminData();
     } catch (error) {
       show(error.message, true);
@@ -212,13 +221,34 @@ export function AdminView({ activeSection, user, show, onResetComplete }) {
           >
             <div className="form-grid">
               <Field label="Full name">
-                <input value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
+                <input
+                  value={form.fullName}
+                  aria-invalid={invalidFields.fullName ? "true" : undefined}
+                  onChange={(event) => {
+                    setForm({ ...form, fullName: event.target.value });
+                    setInvalidFields({ ...invalidFields, fullName: false });
+                  }}
+                />
               </Field>
               <Field label="Company email">
-                <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+                <input
+                  value={form.email}
+                  aria-invalid={invalidFields.email ? "true" : undefined}
+                  onChange={(event) => {
+                    setForm({ ...form, email: event.target.value });
+                    setInvalidFields({ ...invalidFields, email: false });
+                  }}
+                />
               </Field>
               <Field label="Phone">
-                <input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+                <input
+                  value={form.phone}
+                  aria-invalid={invalidFields.phone ? "true" : undefined}
+                  onChange={(event) => {
+                    setForm({ ...form, phone: event.target.value });
+                    setInvalidFields({ ...invalidFields, phone: false });
+                  }}
+                />
               </Field>
               <Field label="Role">
                 <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>

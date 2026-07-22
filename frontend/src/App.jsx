@@ -37,6 +37,11 @@ export default function App() {
   function show(text, error = false) {
     setMessage(text);
     setIsError(error);
+    if (error) {
+      window.setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }, 0);
+    }
   }
 
   async function login(account) {
